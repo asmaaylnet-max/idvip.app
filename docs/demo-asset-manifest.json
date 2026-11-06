@@ -1,0 +1,50 @@
+[
+  {
+    "name": "work-1",
+    "width": 338,
+    "height": 287,
+    "bytes": 14080,
+    "source": "owner-supplied-cover",
+    "illustrative": true
+  },
+  {
+    "name": "work-2",
+    "width": 186,
+    "height": 218,
+    "bytes": 5978,
+    "source": "owner-supplied-cover",
+    "illustrative": true
+  },
+  {
+    "name": "work-3",
+    "width": 164,
+    "height": 206,
+    "bytes": 7054,
+    "source": "owner-supplied-cover",
+    "illustrative": true
+  },
+  {
+    "name": "proof-1",
+    "width": 145,
+    "height": 196,
+    "bytes": 6158,
+    "source": "owner-supplied-cover",
+    "illustrative": true
+  },
+  {
+    "name": "proof-2",
+    "width": 95,
+    "height": 146,
+    "bytes": 2798,
+    "source": "owner-supplied-cover",
+    "illustrative": true
+  },
+  {
+    "name": "proof-3",
+    "width": 543,
+    "height": 507,
+    "bytes": 47208,
+    "source": "owner-supplied-cover",
+    "illustrative": true
+  }
+]

@@ -7,6 +7,7 @@ import {auditedBatch,and,gate,auditOnly,type Predicate} from '../services/audit'
 import {enqueueEmail,deliverEmail,otpEmail,pruneExpired} from '../services/email';
 import {passkeyRoutes} from './passkeys';
 import {isReservedName,unreservedNameSQL} from '../services/reserves';
+import {custodyForUser,custodyConsentForEmail,custodyReceiptSQL,custodyReceiptStatements} from '../services/custody';
 export interface Challenge {id:string;email:string;purpose:'signup'|'login'|'recover';pin_hash:string;payload_json:string;attempts:number;expires_at:number;created_at:number;consumed_at:number|null;delivery_state:string;}
 export interface Invitation {id:string;email:string;role:Exclude<Role,'owner'>;mode:'moderator'|'managed'|'handover';site_id:string|null;expected_owner_id:string|null;payload_json:string;expires_at:number;accepted_at:number|null;invited_by:string;}
 const email=z.string().trim().toLowerCase().email().max(254),locale=z.enum(['ar','en']).optional();
@@ -17,7 +18,8 @@ export async function sessionResult(c:Parameters<typeof createSession>[0],user:U
 export const authRoutes=new Hono<AppEnv>();
 authRoutes.post('/request',async c=>{
  requireOrigin(c);requireSecret(c.env);await requestLimit(c,'otp-request',15,600);const data=await body(c,requestSchema);const time=now();
- if(data.challengeId){const ch=await c.env.DB.prepare('SELECT * FROM otp_challenges WHERE id=? AND email=? AND purpose=? AND consumed_at IS NULL AND expires_at>?').bind(data.challengeId,data.email,data.purpose,time).first<Challenge>();if(!ch)fail('OTP_INVALID');const result=await deliverEmail(c.env,ch.id);if(!result.accepted)fail(result.unknown?'EMAIL_UNKNOWN':'EMAIL_UNAVAILABLE',503);return c.json({challengeId:ch.id,message:localeFor(c)==='en'?'Verification email accepted for sending.':'قُبلت رسالة التحقق للإرسال.',expiresIn:ch.expires_at-time,resendAfter:60});}
+ const consentRequired=data.purpose!=='signup'&&await custodyConsentForEmail(c.env,data.email);
+ if(data.challengeId){const ch=await c.env.DB.prepare('SELECT * FROM otp_challenges WHERE id=? AND email=? AND purpose=? AND consumed_at IS NULL AND expires_at>?').bind(data.challengeId,data.email,data.purpose,time).first<Challenge>();if(!ch)fail('OTP_INVALID');const result=await deliverEmail(c.env,ch.id);if(!result.accepted)return c.json({error:localized(result.unknown?'EMAIL_UNKNOWN':'EMAIL_UNAVAILABLE',localeFor(c)),code:result.unknown?'EMAIL_UNKNOWN':'EMAIL_UNAVAILABLE',challengeId:ch.id,consentRequired},503);return c.json({challengeId:ch.id,consentRequired,message:localeFor(c)==='en'?'Verification email accepted for sending.':'قُبلت رسالة التحقق للإرسال.',expiresIn:ch.expires_at-time,resendAfter:60});}
  if(!c.env.RESEND_API_KEY&&!c.env.EMAIL)fail('EMAIL_UNAVAILABLE',503);
  await rateLimit(c.env,'otp-email:'+data.email,8,3600);
  const recent=await c.env.DB.prepare('SELECT created_at FROM otp_challenges WHERE email=? ORDER BY created_at DESC LIMIT 1').bind(data.email).first<{created_at:number}>();if(recent&&recent.created_at>time-60)fail('RATE_LIMIT',429);
@@ -41,29 +43,34 @@ authRoutes.post('/request',async c=>{
  const results=await c.env.DB.batch(statements);if(results[results.length-1].meta.changes!==1)fail('SLUG_UNAVAILABLE',409);
  try{await enqueueEmail(c.env,id,otpEmail(data.email,pin,payload.locale??'ar',payload.name,!!invitation),time+600);}catch{await c.env.DB.prepare("UPDATE otp_challenges SET delivery_state='failed' WHERE id=?").bind(id).run();fail('EMAIL_UNAVAILABLE',503);}
  const result=await deliverEmail(c.env,id);
- if(!result.accepted)return c.json({error:localized(result.unknown?'EMAIL_UNKNOWN':'EMAIL_UNAVAILABLE',localeFor(c)),code:result.unknown?'EMAIL_UNKNOWN':'EMAIL_UNAVAILABLE',challengeId:id},503);
+ if(!result.accepted)return c.json({error:localized(result.unknown?'EMAIL_UNKNOWN':'EMAIL_UNAVAILABLE',localeFor(c)),code:result.unknown?'EMAIL_UNKNOWN':'EMAIL_UNAVAILABLE',challengeId:id,consentRequired},503);
  // Finite request-driven cleanup; no scheduled infrastructure.
  if(Math.random()<0.02)await pruneExpired(c.env);
- return c.json({challengeId:id,message:localeFor(c)==='en'?'Verification email accepted for sending.':'قُبلت رسالة التحقق للإرسال.',expiresIn:600,resendAfter:60});
+ return c.json({challengeId:id,consentRequired,message:localeFor(c)==='en'?'Verification email accepted for sending.':'قُبلت رسالة التحقق للإرسال.',expiresIn:600,resendAfter:60});
 });
 authRoutes.post('/verify',async c=>{
  requireOrigin(c);await requestLimit(c,'otp-verify',40,600);
- const data=await body(c,z.object({challengeId:z.string().min(20).max(80),pin:z.string().regex(/^\d{6}$/),acceptInvitation:z.boolean().optional(),locale}).strict());const time=now();
+ const data=await body(c,z.object({challengeId:z.string().min(20).max(80),pin:z.string().regex(/^\d{6}$/),acceptInvitation:z.boolean().optional(),acceptCustody:z.boolean().optional(),termsAccepted:z.boolean().optional(),ageConfirmed:z.boolean().optional(),locale}).strict());const time=now();
  const challenge=await c.env.DB.prepare("UPDATE otp_challenges SET attempts=attempts+1 WHERE id=? AND attempts<6 AND consumed_at IS NULL AND expires_at>? AND delivery_state IN ('accepted','unknown') RETURNING *").bind(data.challengeId,time).first<Challenge>();
  if(!challenge||!constantTime(challenge.pin_hash,await hmac(c.env,`otp:${challenge.id}:${data.pin}`)))fail('OTP_INVALID');
  const payload=JSON.parse(challenge.payload_json) as Payload;
  let user=await c.env.DB.prepare("SELECT * FROM users WHERE email=? AND status='active'").bind(challenge.email).first<UserRow>();
+ const custody=user?await custodyForUser(c.env,user.id):null;
+ if(custody&&(data.acceptCustody!==true||data.termsAccepted!==true||data.ageConfirmed!==true))return c.json({error:localized('INVITATION',localeFor(c)),code:'INVITATION',consentRequired:true,challengeId:challenge.id},400);
+ if(custody&&payload.inviteId)fail('INVITATION');
  let invitation:Invitation|null=null;
  if(payload.inviteId){if(!data.acceptInvitation)fail('INVITATION');invitation=await c.env.DB.prepare('SELECT * FROM invitations WHERE id=? AND email=? AND accepted_at IS NULL AND expires_at>?').bind(payload.inviteId,challenge.email,time).first<Invitation>();if(!invitation)fail('INVITATION');}
  const newUser=!user,userId=user?.id??randomToken(24),siteId=randomToken(24),fixedRole=verifiedRole(challenge.email),assignedRole=fixedRole!=='user'?fixedRole:invitation?.mode==='moderator'?invitation.role:user?.role??'user';
  const shouldCreateSite=!!payload.slug&&(newUser||invitation?.mode==='managed')&&invitation?.mode!=='handover';
  const base={sql:"EXISTS(SELECT 1 FROM otp_challenges WHERE id=? AND consumed_at IS NULL AND expires_at>? AND attempts<=6)",args:[challenge.id,time]};
  const predicates:Predicate[]=[base,{sql:newUser?'NOT EXISTS(SELECT 1 FROM users WHERE email=?)':"EXISTS(SELECT 1 FROM users WHERE id=? AND status='active')",args:[newUser?challenge.email:userId]}];
+ if(user)predicates.push(custodyReceiptSQL(userId,custody));
  if(shouldCreateSite){if(!validSlug(payload.slug!))fail('SLUG_UNAVAILABLE',409);predicates.push(unreservedNameSQL(payload.slug!),{sql:'EXISTS(SELECT 1 FROM slug_reservations WHERE slug=? AND challenge_id=? AND email=? AND expires_at>?) AND NOT EXISTS(SELECT 1 FROM sites WHERE slug=? OR owner_id=?)',args:[payload.slug,challenge.id,challenge.email,time,payload.slug,userId]});}
  if(invitation){predicates.push({sql:"EXISTS(SELECT 1 FROM invitations i JOIN users actor ON actor.id=i.invited_by WHERE i.id=? AND i.accepted_at IS NULL AND i.expires_at>? AND actor.status='active' AND actor.role IN ('owner','principal'))",args:[invitation.id,time]});if(invitation.mode==='handover')predicates.push({sql:'EXISTS(SELECT 1 FROM sites WHERE id=? AND owner_id=?) AND NOT EXISTS(SELECT 1 FROM sites WHERE owner_id=?)',args:[invitation.site_id,invitation.expected_owner_id,userId]});}
  const profile:ProfileData={...structuredClone(EMPTY_PROFILE),name:payload.name??user?.name??challenge.email.split('@')[0],email:challenge.email,whatsapp:payload.whatsapp??'',phone:payload.phone??''};
- await auditedBatch(c.env,{actor:userId,action:invitation?'invitation.accept':newUser?'auth.register':'auth.verify',object:invitation?.site_id??userId},and(...predicates),eventId=>{
+ await auditedBatch(c.env,{actor:userId,action:custody?'managed.receive':invitation?'invitation.accept':newUser?'auth.register':'auth.verify',object:invitation?.site_id??userId},and(...predicates),eventId=>{
  const g=gate(eventId);const stmts=[c.env.DB.prepare(`UPDATE otp_challenges SET consumed_at=?,verified_user_id=? WHERE id=? AND ${g.sql}`).bind(time,userId,challenge.id,...g.args??[])];
+ if(custody)stmts.push(...custodyReceiptStatements(c.env,eventId,userId));
  if(newUser){stmts.push(c.env.DB.prepare(`UPDATE counters SET value=value+1 WHERE name='public_id' AND ${g.sql}`).bind(...g.args??[]));stmts.push(c.env.DB.prepare(`INSERT INTO users(id,email,name,role,public_id,locale,verified_at,created_at) SELECT ?,?,?,?,value,?,?,? FROM counters WHERE name='public_id' AND ${g.sql}`).bind(userId,challenge.email,profile.name,assignedRole,payload.locale??'ar',time,time,...g.args??[]));}
  else stmts.push(c.env.DB.prepare(`UPDATE users SET role=?,verified_at=? WHERE id=? AND ${g.sql}`).bind(assignedRole,time,userId,...g.args??[]));
  if(shouldCreateSite)stmts.push(c.env.DB.prepare(`INSERT INTO sites(id,owner_id,slug,language,draft_json,created_at,updated_at) SELECT ?,?,?,?,?,?,? WHERE ${g.sql}`).bind(siteId,userId,payload.slug,payload.language,JSON.stringify(profile),time,time,...g.args??[]));
@@ -86,7 +93,7 @@ authRoutes.post('/password',authenticated,async c=>{
  await auditedBatch(c.env,{actor:user.id,action:'auth.password_set',object:user.id},{sql:"EXISTS(SELECT 1 FROM users WHERE id=? AND status='active') AND EXISTS(SELECT 1 FROM sessions WHERE token_hash=? AND auth_at>?)",args:[user.id,session.token_hash,time-300]},eventId=>{const g=gate(eventId);return[c.env.DB.prepare(`UPDATE users SET password_hash=? WHERE id=? AND ${g.sql}`).bind(hash,user.id,...g.args??[]),c.env.DB.prepare(`DELETE FROM sessions WHERE user_id=? AND token_hash<>? AND ${g.sql}`).bind(user.id,session.token_hash,...g.args??[])];});
  const updated=await c.env.DB.prepare('SELECT * FROM users WHERE id=?').bind(user.id).first<UserRow>();return c.json({ok:true,user:publicUser(updated??user,!!await c.env.DB.prepare('SELECT id FROM passkeys WHERE user_id=? LIMIT 1').bind(user.id).first())});
 });
-authRoutes.post('/logout',authenticated,async c=>{await c.env.DB.prepare('DELETE FROM sessions WHERE token_hash=?').bind(c.get('session')!.token_hash).run();clearSessionCookie(c);return c.json({ok:true});});
+authRoutes.post('/logout',authenticated,async c=>{const user=c.get('user')!,session=c.get('session')!;await auditedBatch(c.env,{actor:user.id,action:'auth.logout',object:user.id},{sql:'EXISTS(SELECT 1 FROM sessions WHERE token_hash=? AND user_id=?)',args:[session.token_hash,user.id]},eventId=>{const g=gate(eventId);return[c.env.DB.prepare(`DELETE FROM sessions WHERE token_hash=? AND ${g.sql}`).bind(session.token_hash,...g.args??[])];});clearSessionCookie(c);return c.json({ok:true});});
 authRoutes.get('/invitations/:id',async c=>{const invite=await c.env.DB.prepare('SELECT mode,expires_at FROM invitations WHERE id=? AND accepted_at IS NULL AND expires_at>?').bind(c.req.param('id'),now()).first<{mode:string;expires_at:number}>();if(!invite)fail('NOT_FOUND',404);return c.json({invitation:{id:c.req.param('id'),mode:invite.mode,expiresAt:invite.expires_at}});});
 authRoutes.route('/passkeys',passkeyRoutes);
 authRoutes.route('/passkey',passkeyRoutes);

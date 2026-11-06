@@ -1,126 +1,39 @@
-# عقد API لمنصة VIP
+# عقد API لمنصة VIP — النسخة المدمجة
 
-يصدّر `src/server/api.ts` الكائن `apiApp` والنوع `Env`، والدالة `getSession(request: Request, env: Env)` لإعادة استخدام قارئ الجلسة في SSR أو تفويض التصدير. نتيجة الدالة `{user:UserRow,session:SessionRow}|null` خاصة بالخادم؛ لا تُرسل UserRow مباشرة للعميل لأنها تحتوي حقول تخزين المصادقة. يُركّب الأب `apiApp` على `/api`، بينما المسارات داخل التطبيق لا تحتوي هذه البادئة. العينة `test` ومسارات التصدير العامة يقدّمها الأب، لا حسابات مختلقة في قاعدة البيانات.
+يركب Worker مسارات apiApp تحت /api. الدومين الوحيد للجلسة وإجراءات الحسابات في الإنتاج auth.idvip.app، وCOOKIE host-only HttpOnly Secure؛ لا تفويض من هوية رأس ولا CORS wildcard إلى المستأجرين. خادم Preview يستخدم أصله HTTPS نفسه وSameSite=None وقاعدة D1 محلية مستقلة. البيانات والنجاح والأخطاء JSON، وفي حالات الإرسال غير المؤكدة تحافظ استجابة503 على challengeId أو invitationId أو outboxId إذا توفر؛ لا يعني قبول المزود وصول البريد.
 
-النتائج JSON، والخطأ `{error,code}`. يستخدم الخادم `locale: 'ar'|'en'` في جسم JSON، ثم `X-Locale`، والعربية افتراضياً. اللغة الصريحة في الجسم تتقدم على الرأس. لا نصوص أخطاء ثنائية اللغة مختلطة. بعض حالات الإرسال تضيف `challengeId` أو `invitationId` إلى خطأ 503 حتى يمكن إعادة المحاولة دون إنشاء رسالة أخرى.
+## الحساب والمحتوى
 
-## البيئة
+GET /session يعيد user/csrf/site أو null. POST /auth/request يطلب OTP بستة أرقام لصلاحية600ثانية وpurpose signup|login|recover. التسجيل يحتاج name/slug/language وtermsAccepted/ageConfirmed، مع حجز ذري للاسم الفريد غير المحجوز؛ صيغة DNS1–63محرفاً مع أرقام وأحرف وشرطات داخلية. إعادة البريد المعلق تستعمل challengeId نفسه في /auth/request لا تحدياً أو رمزاً جديداً. POST /auth/verify يحتاج challengeId/pin، ويتعامل مع acceptInvitation أو موافقات custody عندما تعلن الاستجابة ذلك. الصلاحيات الثابتة للإيميلين الأساسيين لا تنشأ قبل تحقق البريد؛ لا حسابات وهمية في الإنتاج.
 
-`DB: D1Database`، و`MEDIA?: R2Bucket`، و`SESSION_SECRET` بطول 32 محرفاً على الأقل، و`PUBLIC_ORIGIN`، و`COOKIE_MODE: 'preview'|'production'`، و`RESEND_API_KEY?`، و`RP_ID?`. الإنتاج على `https://idvip.app`. Preview يطابق PUBLIC_ORIGIN ومضيف الطلب تماماً؛ HTTP مسموح فقط لـlocalhost/127.0.0.1 في فحص Origin، لكن cookie تبقى Secure ولا توجد مصادقة تطوير متجاوزة.
+POST /auth/password يطلب جلسة وتحققاً حديثاً، وكلمة13–256محرفاً مع رقم وحرف إنجليزي كبير وصغير. PBKDF2 وsalt وpepper خادمي؛ تعديل الرمز يسقط الجلسات الأخرى. Passkey endpoints تحت /auth/passkeys خيارات وتحقق حقيقي بـSimpleWebAuthn، RP ID في الإنتاج auth.idvip.app دون إرسال بصمة أو وجه للتطبيق. POST /auth/logout يثبت حذف الجلسة في معاملة تدقيق.
 
-البديل الأصلي اختياري بهذا العقد:
+GET /sites/me يعيد draft/published/revision/pendingReview/visible/discoverable والقناع الفوري للخصوصية للمالك وحده. PUT /sites/me/draft يحفظ {data,revision} بـCAS؛ الرفع من تبويب قديم يعيد409 لا يستبدل النسخة الجديدة. POST /sites/me/submit يأخذ snapshot immutable ذرياً، طلب واحد معلق؛ لا يُنشر أي حرف من المسودة قبل موافقة. POST /sites/me/visibility يضيف الإخفاء فوراً ولا يفك إخفاء الحقول دون نسخة مراجعة. إعادة ظهور اللقطة المعتمدة نفسها غير الموقوفة أو إدراجها في البحث تحكم فوري للمستخدم مع تدقيق، بلا كشف مسودة. تغيّر الخصوصية بعد طلب المراجعة لا يلغيه قرار الموافقة القديم.
 
-```ts
-EMAIL?: {
-  send(message: {
-    from: string; to: string; subject: string;
-    html: string; text: string; replyTo: string;
-  }): Promise<unknown>;
-}
-```
+GET /sites/:slug و/search?q=&country=&city=&specialty= يعيدان نسخة عامة مرئية فقط، والبحث من حقول ظاهرة دون مسودات أو تسريب حقل مخفي. النتائج حتى50. المعرف /c/:publicId ورابط /r/:publicId يتحولان للملف العام المعتمد فقط. DELETE /sites/me يتطلب تحققاً حديثاً، يعطل الحساب والجلسات أولاً ثم ينظف R2 والصفوف التابعة؛ DELETE_PENDING يعني بقي تنظيف لا نجاحاً زائفاً.
 
-على المحول الحقيقي أن يرفض Promise عند عدم قبول المزود للرسالة؛ تحقق Promise يعني قبول الإرسال، لا الوصول للصندوق. لا يُنشئ API هذا الربط ولا يختلق مرسلاً بديلاً. رفض رفع الوسائط وعرضها عند غياب R2 هو 503 مبكر. حذف حساب لا يملك وسائط لا يحتاج R2؛ حساب له وسائط لا يُعلن حذف ملفاته إذا الربط غير متاح.
+## الإدارة والعهدة
 
-المرسل والرد والدومين من `BRAND`. بريد OTP بتصميم عربي أو إنجليزي مستقل وصور غلاف وشعار بروابط مطلقة `https://idvip.app/brand/cover-dark.webp` و`logo-dark.webp`، ومن ثم يجب أن يحافظ فريق الأصول على هذه المسارات أو يحدّث المراجع المملوكة للخادم بالتنسيق.
+GET /admin/reviews يقبل status/page/limit/q/date/from/to؛ page1–10000 وlimit1–100. status=pending|approve|reject|changes|suspend|all؛ date=YYYY-MM-DD بتوقيتUTC وfrom/to Unix أوISO UTC. الرد {reviews,nextPage}. GET /admin/users يقبل المعلمات الزمنية والبحث والصفحات نفسها وstatus=all|suspended|not-suspended، والرد {users,nextPage}. واجهة الإدارة تحمل دفعة أولى ثم Load more مع تنبيه عدم اكتمال القائمة، لا تخفي سقف100. هذه pagination offset لا snapshot cursor، لذلك تزيل الواجهة التكرار عند تغير البيانات المتزامن.
 
-## الجلسة والمصادقة
+GET /admin/reviews/:id يعيد لقطة الطلب الخاصة لا المسودة الحالية. POST /admin/reviews/:id/decision يستقبل approve|reject|changes|suspend وnote?؛ القرار والنشر والتدقيق والإشعار في معاملة مشروطة بصلاحية وحالة حيّة. approve ينشر snapshot نفسه؛ reject/changes يبقيان المنشور السابق. الإيقاف والاستعادة يحافظان على اختيارات البحث والإخفاء. إدارة الأسماء المحجوزة تحت /admin/reserves، والمزايا تحت /admin/features؛ المدونات والإعدادات ومسارات التدقيق متاحة بأدوارها. الحذف وتغيير الأدوار لنوعي root فقط وبإعادة تحقق؛ moderators لا يحذفون.
 
-`GET /session` يعيد `{user:null,csrf:null,site:null}` للزائر، أو `{user,csrf,site}`. بيانات User العامة هي `id,email,name,role,publicId,hasPassword,hasPasskey`.
+وحدة الحسابات المدارة الجديدة تحت /admin/managed، وعقدها التفصيلي في docs/managed-contract.md: تنشئ UUID/publicId/site حقيقيين وrole=user وverified_at=0، مع custody محدودة. محرر root يكتب ويعاين ويرفع WebP للمستفيد دون انتحال جلسة. عند أول OTP صحيح يشترط acceptCustody/termsAccepted/ageConfirmed ثم يسقط custody ذرياً؛ تبقى UID/publicId/site/data/media كما هي. الدعوة القديمة mode=managed تحت /admin/invite مختلفة: إنشاء عند قبول الدعوة، لا بديل عن التحرير قبل الاستلام. handover ينقل ملكية ملف قائم ذرياً بعد قبول الإيميل المقصود ويسقط جلسات ومراجعات المالك السابق، بلا استبدال ملف مستفيد آخر صامتاً.
 
-`GET /availability?slug=` يعيد `{slug,available}`. الاسم DNS صغير الحروف، 1–63 محرفاً، حرف/رقم في الطرفين مع شرطات داخلية. يحظر الخادم مخزون أسماء النظام والحساسة و`xn--`. الحجز UNIQUE مع انتهاء، ولا تكفي نتيجة availability لحجز الاسم؛ الحجز الذري يجري عند طلب التسجيل.
+## الوسائط والمخرجات
 
-`POST /auth/request` يستقبل:
+POST /media multipart WebP نهائي فقط حتى8MiB وضلع8192 و32مليونبكسل، مع رفض الحركة وEXIF/XMP/ICC والمحتوى المخالف. هذا تحقق بنية وأبعاد وليس محلل بكسلات خادمياً. العميل يعيد الترميز والضغط محلياً. R2 خاص، المفتاح عشوائي ولا اسم ملف المستخدم في object key، والرفع وسجل التدقيق في معاملة D1 بعد نجاح R2 مع تنظيف عند الفشل. GET /media/:id no-store ويسمح بالملكية أو مراجعة مخولة أو حقل ظاهر منشور فقط؛ Root custodian له قراءة الهدف قبل الاستلام بقدر العهدة.
 
-```json
-{
-  "email":"user@example.com", "purpose":"signup",
-  "name":"Name", "slug":"profile-name", "language":"ar", "locale":"ar",
-  "whatsapp":"", "phone":"", "termsAccepted":true, "ageConfirmed":true
-}
-```
+Worker يقدم /api/vcard/:slug من نسخة عامة مع رابط الموقع الشخصي وبيانات ظاهرة، و/api/export/:slug/profile.pdf|ats.pdf عبر BROWSER.quickAction. يتحقق من Content-Type وتوقيع PDF، لا يعرض HTML على أنه PDF. العينة test بلغتين؛ المواقع الحقيقية بلغة صاحب المحتوى دون ترجمة تلقائية غير معتمدة. ATS نصي مهني دون الصور والهوايات والروابط الاجتماعية غير اللازمة، مع اختياري الوضعين. رموز QR فعلية مع شعار المنصة ومنطقة بيضاء وتصحيحH؛ المعاينة الخاصة لا تسمح بتصدير بيانات مسودة للعامة.
 
-purpose هو signup أو login أو recover. التسجيل الجديد يتطلب الاسم والاسم الفرعي ولغة المحتوى والموافقتين. يمكن دخول الإيميلين الأساسيين لأول مرة عبر OTP دون اختلاق حساب مسبق؛ لا تنشأ صلاحية owner أو principal إلا بعد OTP صحيح. الدعوة تضيف `inviteId`؛ المستفيد الجديد يؤكد الشروط والعمر، ونمط managed يأخذ اسم الملف ولغته من الدعوة.
+## البريد والإشعارات والسجل
 
-نجاح الطلب `{challengeId,message,expiresIn:600,resendAfter:60}` يعني قبول المزود للإرسال فقط. الرمز ستة أرقام مولّد بـWeb Crypto، محفوظ HMAC مرتبطاً بالتحدي، صالح 10 دقائق، وله ست محاولات تحقق. إعادة الطلب الجديد لا تقل عن 60 ثانية، مع قفل D1 يمنع الطلبين المتزامنين من تخطي المهلة. توجد حصص منفصلة للبريد وعنوان الاتصال.
+المرسل الأساسي support@idvip.app والرد ceo@idvip.app؛ دعم واتساب966555444959. Resend payload ثابت ومفتاح idempotency ثابت، Outbox AES-GCM مع lease وحالات قبول وعدم يقين. EMAIL الأصلي لا يعد بديلاً حتى يركب محول صالح ومرسل موثق. لا تحويل بعد قبول مجهول/timeout/5xx يحفظ احتمال القبول، والتحويل عند غياب Resend أو رفض معلوم دون تاريخ عدم يقين. payload يحذف عند القبول، وتنظيف المنتهي محدود عند الطلبات بما فيها إرسال انتهت lease لا ضمان حذف لحظي دون طلبات أو جدول تشغيل مستقل.
 
-عند 503 EMAIL_UNKNOWN مع challengeId، أعد نفس `/auth/request` بالجسم `{email,purpose,challengeId,locale?}`. يعاد نفس محتوى البريد ومفتاح منع التكرار؛ لا رمز جديد. لا تُعاد محاولة مرسل EMAIL ذي قبول مجهول لأنه لا يقدم ضمان idempotency. يمكن استخدام PIN إن وصل فعلاً حتى عندما سجل الإرسال غير مؤكد.
+الإشعار داخل المنصة يحفظ أولاً مستقلاً عن بريد حالة المراجعة أو Push. القراءة والسماع والحذف تسجل دون نصوص الإشعار. POST /admin/notifications يقبل جمهور الجميع أوuserIds/publicIds وعنواناً ونصاً ونوعnormal|special. ردstored يؤكد الحفظ فقط. إذا PUSH_ENABLED=true ومفاتيح ومزودون مراجعون، يحاول waitUntil الإرسال للأجهزة الموافق عليها حتى5000مستفيد في هذه المكملة؛ ليس queue مستديماً للحملات الكبرى ولا ادعاء عرض الجهاز. لا ضمان صوت طوارئ خارج التطبيق، وإذن الجهاز بتفاعل المستخدم فقط. الوحدة تحت /push، وPUSH_ENABLED يظل غير مفعل إنتاجياً حتى تحقق المزود والمفاتيح.
 
-`POST /auth/verify` يستقبل `{challengeId,pin,acceptInvitation?:true,locale?}`. يعيد `{user,csrf,site}` مع جلسة جديدة. تحدي OTP يستهلك مرة واحدة ذرياً. recover يبطل الجلسات القديمة قبل إصدار الجلسة الجديدة.
+Audit HMAC metadata وprevHash مع triggers تمنع التعديل والحذف ولقطة المراجعة، ومعاملات مشروطة تصون الدور والملكية والحالة والنسخة. لا PIN أو أسرار أو أجسام طلبات أو بريد خام في السجل. /admin/audit يدعم مرشحات محدودة و200نتيجة؛ /admin/audit/export لنوعيroot JSON/CSV حتى5000 مع حماية الصيغ. لا ادعاء WORM ضد مالك Cloudflare أو من يملك DB والسر معاً. لا حذف مضمون من النسخ الاحتياطية بلا سياسة تشغيل مستقلة.
 
-`POST /auth/password` يستقبل `{password,locale?}`، ويتطلب جلسة وتحققاً حديثاً خلال خمس دقائق. الحد 13–256 محرفاً مع رقم وحرف لاتيني كبير وصغير. PBKDF2-SHA256 بـ100000 دورة، salt عشوائي وHMAC pepper من SESSION_SECRET. لا يمكن تغيير الرمز من مجرد Session قديمة. يبطل حفظ الرمز الجلسات الأخرى.
+## الدليل الحالي
 
-`POST /auth/login`: `{email,password,locale?}` ويعيد جلسة. `POST /auth/logout`: `{}` مع CSRF، يبطل الجلسة الحالية ويحذف cookie.
-
-Cookie هي `__Host-vip_session`، host-only، HttpOnly، Secure، SameSite=None في Preview وLax في Production، مدة 30 يوماً. المخزن في D1 بصمة الرمز العشوائي لا الرمز نفسه. لا تقبل الهوية من `X-User-Identity` ولا يوجد bypass dev login.
-
-كل تغيير موثّق يحتاج `X-CSRF-Token` وOrigin مسموحاً. المضيفون الموثوقون للإنتاج: الدومين الأساسي وwww/admin/account/auth/login/register تحته، لا مواقع المستأجرين. لا CORS wildcard ولا نقل جلسات بين ملفات المستخدمين. التغييرات غير الموثقة مثل طلب OTP والدخول تتحقق أيضاً من Origin والمضيف.
-
-## مفاتيح المرور
-
-`POST /auth/passkeys/register/options` يستقبل `{}`، يتطلب جلسة وتحققاً حديثاً، ويعيد `{challengeId,options}`. `POST /auth/passkeys/register/verify` يستقبل `{challengeId,response,locale?}` ويعيد `{verified:true}` بعد تحقق SimpleWebAuthn حقيقي.
-
-`POST /auth/passkeys/authentication/options`: `{email?,locale?}`، والغياب يطلب discoverable credential. `POST /auth/passkeys/authentication/verify`: `{challengeId,response,locale?}` ويعيد `{user,csrf,site}`. توجد aliases بنفس العقد تحت `/auth/passkey` المفرد.
-
-RP ID هو idvip.app في الإنتاج، ومضيف Preview في المعاينة. RP_ID الاختياري يجب أن يكون مطابقاً لمضيف موثوق أو أصله المسموح، لا نطاق مستأجر. يتحقق الخادم من الأصل الدقيق المحفوظ وRP والتوقيع وuser verification والعداد وuserHandle إذا قُدم. التحدي صالح خمس دقائق، مرتبط بالجلسة في التسجيل، ويستهلك مرة واحدة في batch مشروط. يطلب التسجيل residentKey وuserVerification required ولا يجمع بصمات حيوية.
-
-## الملف والمراجعة والبحث
-
-`GET /sites/me` يعيد `{site}` أو `{site:null}` للعضو بلا ملف. Site تشمل draft وpublished وrevision وpublishedRevision وpendingReview وvisible وdiscoverable وownerId.
-
-`PUT /sites/me/draft`: `{data:ProfileData,revision,locale?}` يعيد `{site}`. يحفظ النسخة الجديدة ويزيد revision؛ النسخة القديمة تعطي 409 CONFLICT. يتحقق Zod من كل حقل وأطوال النصوص وأعداد المصفوفات والروابط. مراجع صور غير مملوكة للحساب تعطي 403، حتى لو عرف المستخدم معرّفها.
-
-`POST /sites/me/submit`: `{}` يعيد `{reviewId,site}`، ويأخذ لقطة immutable من draft في SQL داخل المعاملة نفسها، مع revision ونوع publish أو edit ولقطة إعدادات الإفصاح. لا يمكن وجود مراجعتين معلقتين لنفس الموقع. يظل المنشور السابق أثناء انتظار طلب التعديل.
-
-`POST /sites/me/visibility`: `{visible?,discoverable?,hidden?:string[],locale?}` يعيد `{site}`. إضافة الإخفاء وسحب الظهور فوريان. إزالة إخفاء تتطلب مراجعة. إعادة ظهور نسخة معتمدة سابقاً مسموحة إذا ليست معلقة/موقوفة؛ لا ظهور بلا published. إذا أخفى المستخدم الموقع أو حقلاً بعد إرسال المراجعة، لا تلغي الموافقة اللاحقة هذا الإخفاء؛ توجد نسخة إفصاح مستقلة ودمج للحقول المخفية الجديدة.
-
-`GET /sites/:slug` يعيد `{profile:{slug,language,data,publicId}}` من نسخة منشورة مرئية فقط. الحقول المخفية تكون قيمتها فارغة أو مصفوفة فارغة، ولا تظهر hidden نفسها ولا المسودة. `GET /search?q=&country=&city=&specialty=` يعيد `{profiles}` حتى 50 نتيجة مرتبة بالاسم الفرعي. المطابقة تتم على حقول ظاهرة في SQL؛ لا مطابقة من bio/اسم/تخصص مخفي ولا مسودة غير معتمدة. المرشحات البلد/المدينة/التخصص تطابق دون حساسية لحالة الحرف، وq يطابق الاسم والتخصص والبلد والمدينة والنبذة والمهارات الظاهرة.
-
-`DELETE /sites/me` يحذف الحساب وملفه، لا مجرد الموقع، ويتطلب تحققاً حديثاً. يُعطَّل الحساب والجلسات والنشر أولاً في batch مسجل، ثم تُحذف وسائط R2 والصفوف التابعة وOTP/outbox/dعوات الحساب. عند فشل R2 تبقى البيانات غير متاحة ويعيد DELETE_PENDING 503 بدلاً من نجاح زائف. التنظيف الدائم قابل لإكماله عبر مسؤول مؤهل؛ لا توجد بنية مهام دورية منشورة.
-
-## الوسائط
-
-`POST /media`: multipart مع `file`، ينتج `{media:{id,url,width,height,bytes}}` وحالة 201، وurl هو `/api/media/:id`. الحد 8 MiB، 8192 لكل ضلع و32 مليون بكسل. صيغة الرفع النهائية WebP فقط. يقرأ العميل JPG/PNG/WebP ويحوّل، ويرفض الخادم JPG/PNG غير المحوّل بـ415 MEDIA_CONVERT لأن هذا Worker لا يملك Image Binding لإعادة الترميز.
-
-يفحص الخادم RIFF/WEBP وطول الملف وVP8/VP8L/VP8X والأبعاد وعدد صورة واحد، ويرفض SVG والمحتوى المتحرك وEXIF/XMP/ICC. هذا تحقق توقيع وبنية وأبعاد، وليس فك ضغط كامل للبكسلات أو كشف برمجيات خبيثة. التخزين R2 خاص ومفتاح عشوائي مرتبط بالمالك، ولا أسماء ملفات العميل ولا object keys عامة.
-
-`GET /media/:id` يسمح للمالك أو للمشرف إذا استُخدم الوسيط في لقطة مراجعة مسموحة، وللعامة فقط عند الإشارة إليه من حقل ظاهر في ملف منشور مرئي. الصور المخفية لا تُكشف بمعرفة ID. جميع استجابات الوسائط no-store لأن الإخفاء الفوري يجب ألا يعتمد على مسح CDN.
-
-## الإدارة
-
-`GET /admin/reviews?status=pending|approve|reject|changes|suspend|all` يعيد `{reviews}` حتى 100. `GET /admin/reviews/:id` يعيد `{review}`. Review تشمل `language` من لغة الموقع بالإضافة للحقول المشتركة: id/siteId/slug/userName/userEmail/whatsapp/revision/kind/status/data/createdAt. البيانات data هي اللقطة immutable، لا المسودة الجديدة.
-
-`POST /admin/reviews/:id/decision`: `{decision:'approve'|'reject'|'changes'|'suspend',note?,locale?}` يعيد `{ok:true,review}`. approve ينشر `reviews.data_json` نفسه، ويحفظ المراجعة والقرار وسجل العملية والإشعار في batch مشروط. لا يلمس draft. reject/changes يبقيان المنشور السابق. suspend يوقف الظهور والاكتشاف. إعادة اتخاذ قرار أو تغير الدور أو الملكية أثناء العملية تعطي 409 بلا حدث نجاح وهمي.
-
-`GET /admin/users?q=` يعيد `{users}` حتى 100. `POST /admin/users/:id/role`: `{role:'principal'|'moderator'|'user',locale?}`، و`DELETE /admin/users/:id` محصوران بـowner وprincipal ويتطلبان تحققاً حديثاً. كلاهما مخول بالحذف وفق القرار الأخير؛ moderators غير مخولين. لا خفض لدور إيميل المالك الأساسي أو المشرف الأساسي عبر endpoint الدور، ولا تعديل ذاتي للدور. تغيير الدور يبطل جلسات المستخدم المستهدف.
-
-`POST /admin/invite`: `{email,role:'principal'|'moderator'|'user',mode:'moderator'|'managed'|'handover',siteId?,name?,slug?,language?,locale?}`. owner/principal فقط مع تحقق حديث. moderator mode لدعوة دور إداري؛ managed/handover يشترطان role=user. managed ينشئ الملف للمستفيد بعد قبول OTP، ولا حساب أو كلمة مرور مشغل مشتركة. handover يحتاج siteId، ويسجل المالك المتوقع؛ نقل الملكية ذري بعد OTP للبريد المقصود وacceptInvitation=true، ويُبطل جلسات المالك السابق ويحوّل الوسائط ويُنهي المراجعة المعلقة السابقة دون تعديل لقطة بياناتها. إذا المستفيد يمتلك ملفاً، لا يستبدله الخادم صامتاً ويعطي تعارضاً.
-
-الدعوة صالحة سبعة أيام؛ النتيجة `{invitationId,message}` مع 201 تعني قبول بريد الدعوة. إذا لم يقبل البريد تُحفظ الدعوة ويعاد 503 مع invitationId. `GET /auth/invitations/:id` يعيد `{invitation:{id,mode,expiresAt}}` بلا بريد أو بيانات اعتماد. `POST /admin/outbox/:id/retry`: `{}` مع تحقق حديث، يعيد نفس رسالة الدعوة المحفوظة خلال نافذة 24 ساعة؛ لا تبديل محتوى أو مفتاح.
-
-`POST /admin/deletions/retry`: `{}`، owner/principal مع تحقق حديث، ينفذ حتى 10 طلبات تنظيف متبقية ويعيد `{ok:true,pending}`. pending العدد الفعلي في D1، ولا يعني نجاح جميع عمليات R2 إذا بقي أكبر من صفر.
-
-## الإعدادات والمدونات والإشعارات والسجل
-
-`GET /settings` و`GET /admin/settings` يعيدان `{homeLocked,platformLocked}`. `PUT /admin/settings`: `{homeLocked,platformLocked,locale?}`. لا middleware قفل شامل يعطل الحقوق أو الإدارة أو التصفح العام الآمن؛ استخدام إشارات القفل في الواجهة مسؤولية الأب.
-
-`GET /blogs` يعيد `{posts}` المنشورة، و`GET /blogs/:slug` يعيد `{post}`. `GET /admin/blogs` يعيد `{posts}` بما في ذلك المسودات. `PUT /admin/blogs/:id`: `{slug,titleAr,titleEn,bodyAr,bodyEn,published,locale?}` ويعيد `{post}`؛ المحتوى نص/Markdown غير موثوق، لا HTML يصرح الخادم بأنه آمن. الواجهة يجب أن تعرضه كنص أو باستخدام renderer مطهّر.
-
-`GET /notifications` يعيد `{notifications}` حتى 100 خاصة بالمستخدم. `POST /notifications/:id/read` أو `/heard` يستقبل `{}`؛ `DELETE /notifications/:id`، و`DELETE /notifications` أو `/notifications/all` لحذف الخاصة بالمستخدم فقط. `POST /admin/notifications`: `{userIds?:string[],publicIds?:number[],all?:boolean,title,body,locale?}` ينشئ إشعارات داخل التطبيق. لا دعم Web Push في هذا التنفيذ ولا ادعاء إرساله.
-
-`GET /admin/audit?action=&actor=&object=&from=&to=&limit=` يعيد `{events}`، الافتراضي 100 والأقصى 200. actor/object مرشحات معرّفات أصلية يحولها الخادم HMAC للمطابقة؛ الناتج لا يكشف البريد أو الهوية الخام. from/to أزمنة Unix بالثواني. `GET /admin/audit/export?format=json|csv` لنوعي root، مع نفس المرشحات، افتراضي 1000 وأقصى 5000؛ JSON `{events}` وCSV UTF-8 يقتبس القيم ويحمي من صيغ جداول البيانات.
-
-السجل سلسلة HMAC على metadata محدودة وprevHash؛ INSERT السجل والتغيير الحساس في المعاملة نفسها وبشرط صلاحية/حالة/نسخة حيّ داخل SQL. triggers تمنع UPDATE/DELETE للسجل وتعديل لقطة المراجعة. لا أسرار أو PIN أو أجسام طلبات أو بريد في أحداثه. هذا لا يدعي مقاومة مالك حساب Cloudflare أو من يملك DB والسر معاً، ولا توجد مرساة تدقيق خارجية.
-
-## البريد وعدم التكرار
-
-Outbox في D1 مشفر AES-GCM، له lease وحالة pending/sending/accepted/unknown/failed وعدّاد محاولات وأثر عدم يقين دائم. Resend يستخدم مفتاحاً ثابتاً `vip-email/{id}` وجسماً ثابتاً. لا تحويل لـEMAIL بعد timeout أو شبكة أو 5xx أو 409 أو أي تاريخ قبول مجهول، حتى إذا أعادت محاولة لاحقة خطأ حصة صريحاً. التحويل مسموح عند غياب Resend منذ البداية، أو رفض معلوم غير مقبول مثل خطأ حصة 429 معروف أو تحقق/مفتاح 400/401/403/422 معروف دون تاريخ عدم يقين.
-
-OTP/outbox والتحديات المنتهية تنظف تنظيفاً محدوداً عند طلبات فعلية؛ لا deployment أو Cron أو Queue أنشأها هذا العمل. نافذة OTP عشرة دقائق ونافذة بريد الدعوة 24 ساعة، ولا تتم إعادة محاولة بعد احتفاظ Resend بمفتاح منع التكرار. البيانات المشفرة مقصورة على هذه الحاجة التشغيلية، ويحذف payload بمجرد قبول الإرسال.
-
-## ما اختُبر والحدود
-
-في 7 نوفمبر 2026 اجتاز `pnpm exec vitest run tests/backend.test.ts` اختبارات backend المحلية. المحول الاختباري يستخدم `node:sqlite` الحقيقي بما فيه UNIQUE/CHECK/JSON1/triggers/rollback، وMocks للبريد وR2 لا مزوداً حقيقياً. شملت الاختبارات OTP مرة واحدة وحد الست محاولات، cookie، CSRF والمضيف، CAS المسودة، ثبات المراجعة وإخفاء متزامن، حجب البحث والوسائط، عدم تكرار Resend، التحويل بعد رفض معلوم، حظر إعادة EMAIL المجهول، قبول handover، تفويض الحذف، append-only وrollback، وخيارات Passkey. `pnpm exec tsc --noEmit` اجتاز عند التسليم.
-
-لا ادعاء اختبار بريد حقيقي إلى المالك أو ceremony Passkey فعلية من جهاز أو Cloudflare D1/R2 بعيد أو حذف من النسخ الاحتياطية. لا ترميز صور خادمي، ولا Web Push، ولا pagination cursor للمجموعات الأكبر من حدود GET المذكورة. النسخ الاحتياطية وحذفها وربط الخدمات والنشر خارج ملكية هذا الجزء. التكامل مع البريد الأصلي يحتاج محولاً حقيقياً من الأب؛ عدم وجوده ليس مشكلة تُخفى برسالة نجاح.
-
-المراجع التقنية التي استند إليها التنفيذ: [SimpleWebAuthn server](https://simplewebauthn.dev/docs/packages/server)، [Resend idempotency لمدة 24 ساعة](https://resend.com/docs/dashboard/emails/idempotency-keys)، [أخطاء Resend](https://resend.com/docs/api-reference/errors)، و[نقاش حد PBKDF2 في workerd والإنتاج](https://github.com/cloudflare/workerd/issues/1346). اختيرت 100000 دورة للتوافق مع سقف Workers المعروف؛ لا يُدّعى أنه يحقق توصية OWASP الأعلى أو أنه بديل عن قياس CPU واختبار بيئة الإنتاج.
+74اختباراً محلياً ناجحاً على SQLite حقيقية ومكتملات Mock للبريد/R2، وفحص TypeScript وبناء Vite وdry-run Worker. الفحوص تغطي32backend و26Push و7تصحيحاتواجهة/إدارة و9Managed. هذا لا يثبت تسليم بريد أو PDF حي أو ceremony جهاز أو رفعR2 بعيد. المرحلة الأولى فقط ثبت نشرها، بينما المراحل المدمجة تتطلب تطبيق الترحيـلات والربوط وفحص الدومين الحي قبل وصفها مطلقة.

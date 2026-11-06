@@ -89,7 +89,7 @@ function foldVCardLine(line: string): string {
   return lines.join('\r\n');
 }
 
-export function buildVCard(input: ProfileData): string {
+export function buildVCard(input: ProfileData, websiteURL=''): string {
   const data = publicProfileData(input);
   const lines = ['BEGIN:VCARD', 'VERSION:3.0', `FN:${vCardText(data.name)}`];
   if (data.specialty) lines.push(`TITLE:${vCardText(data.specialty)}`);
@@ -100,7 +100,7 @@ export function buildVCard(input: ProfileData): string {
   if (data.city || data.country) lines.push(`ADR;TYPE=WORK:;;;${vCardText(data.city)};;;${vCardText(data.country)}`);
   const note = [data.bio, data.note].filter(Boolean).join('\n\n');
   if (note) lines.push(`NOTE:${vCardText(note)}`);
-  const urls = new Set([...data.links.map(item => safeExternalURL(item.url)), ...socialNames.map(name => safeExternalURL(data.socials[name]))].filter(Boolean));
+  const urls = new Set([safeExternalURL(websiteURL),...data.links.map(item => safeExternalURL(item.url)), ...socialNames.map(name => safeExternalURL(data.socials[name]))].filter(Boolean));
   for (const url of urls) lines.push(`URL:${vCardText(url)}`);
   lines.push('END:VCARD');
   return lines.map(foldVCardLine).join('\r\n') + '\r\n';
@@ -158,6 +158,7 @@ export function renderProfileDocument(input: ProfileData, lang: Lang, theme: The
 body.profile.dark{--paper:#151413;--ink:#f8f0df;--muted:#c9bfae;--accent:#dec58c;--line:#66563c;--card:#201d19}
 body.profile.light{--paper:#fcfaf6;--ink:#29262e;--muted:#625e6a;--accent:#675533;--line:#c6bdac;--card:#f1edef}
 body.ats{--paper:#fff;--ink:#181818;--muted:#454545;--accent:#333;--line:#888;--card:#fff}
+body.ats.dark{--paper:#151413;--ink:#f3eee3;--muted:#d1c9b9;--accent:#f3eee3;--line:#887d67;--card:#151413}
 main{max-width:182mm;margin:auto}
 header{position:relative;margin-bottom:8mm;padding-bottom:6mm;border-bottom:1px solid var(--line)}
 h1,h2,h3,p,figure{margin:0}

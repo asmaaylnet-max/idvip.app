@@ -2,6 +2,8 @@ import {Hono} from 'hono';
 import {type AppEnv,authenticated,requestLimit,fail,now,randomToken} from '../security';
 import {type SiteRow,publicProfile,referencedMedia} from '../services/profiles';
 import type {ProfileData} from '../../shared/types';
+import {auditedBatch,gate,auditOnly} from '../services/audit';
+import {isCustodian} from '../services/custody';
 export const MAX_IMAGE_BYTES=8*1024*1024,MAX_IMAGE_PIXELS=32_000_000;
 export interface WebPDimensions{width:number;height:number;}
 const ascii=(bytes:Uint8Array,start:number,length:number)=>String.fromCharCode(...bytes.subarray(start,start+length));
@@ -29,14 +31,15 @@ mediaRoutes.post('/',authenticated,async c=>{
  const file=form.get('file');if(!file||typeof file==='string'||typeof file.arrayBuffer!=='function')fail('MEDIA_INVALID');if(file.size>MAX_IMAGE_BYTES)fail('MEDIA_INVALID',413);
  if(['image/jpeg','image/png'].includes(file.type))fail('MEDIA_CONVERT',415);if(file.type!=='image/webp')fail('MEDIA_INVALID',415);
  const bytes=new Uint8Array(await file.arrayBuffer()),dimensions=inspectWebP(bytes);if(!dimensions)fail('MEDIA_INVALID',415);
- const user=c.get('user')!,id=randomToken(24),key=`private/${user.id}/${randomToken(32)}.webp`;await c.env.MEDIA.put(key,bytes,{httpMetadata:{contentType:'image/webp'},customMetadata:{owner:user.id,id}});
- try{const result=await c.env.DB.prepare("INSERT INTO media(id,user_id,object_key,mime,bytes,width,height,created_at) SELECT ?,id,?,'image/webp',?,?,?,? FROM users WHERE id=? AND status='active'").bind(id,key,bytes.length,dimensions.width,dimensions.height,now(),user.id).run();if(!result.meta.changes){await c.env.MEDIA.delete(key);fail('UNAUTHORIZED',401);}}catch(e){await c.env.MEDIA.delete(key);throw e;}
+ const user=c.get('user')!,id=randomToken(24),key=`private/${user.id}/${randomToken(32)}.webp`;try{await c.env.MEDIA.put(key,bytes,{httpMetadata:{contentType:'image/webp'},customMetadata:{owner:user.id,id}});}catch(e){await auditOnly(c.env,{actor:user.id,action:'media.upload',object:id,outcome:'storage_failed'}).catch(()=>{});throw e;}
+ try{await auditedBatch(c.env,{actor:user.id,action:'media.upload',object:id},{sql:"EXISTS(SELECT 1 FROM users WHERE id=? AND status='active')",args:[user.id]},eventId=>{const g=gate(eventId);return[c.env.DB.prepare(`INSERT INTO media(id,user_id,object_key,mime,bytes,width,height,created_at) SELECT ?,id,?,'image/webp',?,?,?,? FROM users WHERE id=? AND ${g.sql}`).bind(id,key,bytes.length,dimensions.width,dimensions.height,now(),user.id,...g.args??[])];});}catch(e){try{await c.env.MEDIA.delete(key);}catch{await auditOnly(c.env,{actor:user.id,action:'media.cleanup',object:id,outcome:'storage_pending'}).catch(()=>{});}throw e;}
  return c.json({media:{id,url:`/api/media/${id}`,width:dimensions.width,height:dimensions.height,bytes:bytes.length}},201);
 });
 mediaRoutes.get('/:id',async c=>{
  if(!c.env.MEDIA)fail('SERVICE_UNAVAILABLE',503);
  const media=await c.env.DB.prepare("SELECT m.* FROM media m JOIN users u ON u.id=m.user_id WHERE m.id=? AND u.status='active'").bind(c.req.param('id')).first<MediaRow>();if(!media)fail('NOT_FOUND',404);
  const user=c.get('user');let allowed=user?.id===media.user_id;
+ if(!allowed&&user&&['owner','principal'].includes(user.role))allowed=await isCustodian(c.env,user.id,media.user_id);
  const site=await c.env.DB.prepare('SELECT * FROM sites WHERE owner_id=?').bind(media.user_id).first<SiteRow>();
  if(!allowed&&site){const published=publicProfile(site);allowed=!!published&&referencedMedia(published.data).includes(media.id);}
  if(!allowed&&site&&user&&['owner','principal','moderator'].includes(user.role)){const reviews=await c.env.DB.prepare('SELECT data_json FROM reviews WHERE site_id=?').bind(site.id).all<{data_json:string}>();allowed=reviews.results.some(r=>referencedMedia(JSON.parse(r.data_json) as ProfileData).includes(media.id));}

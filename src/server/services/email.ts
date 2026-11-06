@@ -1,5 +1,6 @@
 import {BRAND,type Lang} from '../../shared/types';
-import {bytesToBase64,fromBase64,sha256,now,fail,type Env} from '../security';
+import {bytesToBase64,fromBase64,sha256,now,fail,HttpError,type Env} from '../security';
+import {auditedBatch,gate} from './audit';
 export interface EmailMessage {from:string;to:string;subject:string;html:string;text:string;replyTo:string;}
 interface Outbox {id:string;to_email:string;payload_cipher:string;state:string;provider:string|null;attempts:number;uncertain:number;created_at:number;expires_at:number;lease_until:number|null;next_attempt_at:number;}
 function escapeHTML(value:string){return value.replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]!));}
@@ -46,14 +47,42 @@ export async function deliverEmail(env:Env,id:string):Promise<{accepted:boolean;
  const unknown=hadUncertainty||response.status>=500||response.status===409||response.ok;
  await finish(env,id,unknown?'unknown':'failed','resend',code);return{accepted:false,unknown};
 }
-export async function pruneExpired(env:Env){const time=now();await env.DB.batch([
- env.DB.prepare('DELETE FROM email_outbox WHERE expires_at<? AND state<>\'sending\'').bind(time-3600),
- env.DB.prepare('DELETE FROM otp_challenges WHERE expires_at<?').bind(time-3600),
- env.DB.prepare('DELETE FROM slug_reservations WHERE expires_at<?').bind(time),
- env.DB.prepare('DELETE FROM sessions WHERE expires_at<?').bind(time),
- env.DB.prepare('DELETE FROM webauthn_challenges WHERE expires_at<?').bind(time),
- env.DB.prepare('DELETE FROM rate_limits WHERE window_start<?').bind(time-86400)
- ]);}
+export async function pruneExpired(env:Env) {
+ const time = now();
+ // Never reclaim a live sending lease or retry an uncertain delivery from cleanup.
+ const eligible = 'expires_at<=? AND (lease_until IS NULL OR lease_until<?)';
+ const outbox = await env.DB.prepare(`SELECT id FROM email_outbox WHERE ${eligible} ORDER BY expires_at,id LIMIT 50`)
+  .bind(time,time).all<{id:string}>();
+ for (const row of outbox.results) {
+  try {
+   await auditedBatch(env,{actor:'system-cleanup',action:'email.expire',object:row.id},
+    {sql:`EXISTS(SELECT 1 FROM email_outbox WHERE id=? AND ${eligible})`,args:[row.id,time,time]},eventId => {
+     const g = gate(eventId);
+     return [env.DB.prepare(`DELETE FROM email_outbox WHERE id=? AND ${eligible} AND ${g.sql}`)
+      .bind(row.id,time,time,...g.args)];
+    });
+  } catch (error) { if (!(error instanceof HttpError && error.status===409)) throw error; }
+ }
+ const invitations = await env.DB.prepare('SELECT id FROM invitations WHERE expires_at<=? ORDER BY expires_at,id LIMIT 50')
+  .bind(time).all<{id:string}>();
+ for (const row of invitations.results) {
+  try {
+   await auditedBatch(env,{actor:'system-cleanup',action:'invitation.expire',object:row.id},
+    {sql:'EXISTS(SELECT 1 FROM invitations WHERE id=? AND expires_at<=?)',args:[row.id,time]},eventId => {
+     const g = gate(eventId);
+     return [env.DB.prepare(`DELETE FROM invitations WHERE id=? AND expires_at<=? AND ${g.sql}`)
+      .bind(row.id,time,...g.args)];
+    });
+  } catch (error) { if (!(error instanceof HttpError && error.status===409)) throw error; }
+ }
+ await env.DB.batch([
+  env.DB.prepare('DELETE FROM otp_challenges WHERE id IN (SELECT id FROM otp_challenges WHERE expires_at<=? AND NOT EXISTS(SELECT 1 FROM email_outbox e WHERE e.id=otp_challenges.id AND e.lease_until>=?) ORDER BY expires_at LIMIT 50)').bind(time,time),
+  env.DB.prepare('DELETE FROM slug_reservations WHERE slug IN (SELECT slug FROM slug_reservations WHERE expires_at<=? ORDER BY expires_at LIMIT 50)').bind(time),
+  env.DB.prepare('DELETE FROM sessions WHERE token_hash IN (SELECT token_hash FROM sessions WHERE expires_at<=? ORDER BY expires_at LIMIT 50)').bind(time),
+  env.DB.prepare('DELETE FROM webauthn_challenges WHERE id IN (SELECT id FROM webauthn_challenges WHERE expires_at<=? ORDER BY expires_at LIMIT 50)').bind(time),
+  env.DB.prepare('DELETE FROM rate_limits WHERE key IN (SELECT key FROM rate_limits WHERE window_start<? ORDER BY window_start LIMIT 50)').bind(time-86400),
+ ]);
+}
 
 export function reviewEmail(email:string,slug:string,locale:Lang,decision:'approve'|'reject'|'changes'|'suspend',note=''):EmailMessage {
  const en=locale==='en';const title={approve:en?'Your VIP website is published':'تم نشر موقعك في VIP',reject:en?'Your VIP request needs attention':'حالة طلبك في VIP',changes:en?'Changes requested for your VIP website':'مطلوب تعديل على موقعك في VIP',suspend:en?'Your VIP publication was suspended':'تم تعليق نشر موقعك في VIP'}[decision];

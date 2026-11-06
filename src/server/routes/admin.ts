@@ -5,6 +5,7 @@ import {type AppEnv,type UserRow,authenticated,staff,root,body,fail,now,randomTo
 import {auditedBatch,and,gate,staffSQL,rootSQL} from '../services/audit';
 import {deleteUser,resumeDeletions} from '../services/deletion';
 import {enqueueEmail,deliverEmail,reviewEmail} from '../services/email';
+import {sendPushForUsers} from '../services/push';
 import {BRAND} from '../../shared/types';
 interface ReviewRow{id:string;site_id:string;slug:string;language:'ar'|'en';owner_id:string;user_name:string;user_email:string;revision:number;kind:'publish'|'edit';status:string;data_json:string;created_at:number;}
 export function toReview(row:ReviewRow):Review&{language:'ar'|'en'}{const data=JSON.parse(row.data_json) as ProfileData;return{id:row.id,siteId:row.site_id,slug:row.slug,language:row.language,userName:row.user_name,userEmail:row.user_email,whatsapp:data.whatsapp,revision:row.revision,kind:row.kind,status:row.status,data,createdAt:new Date(row.created_at*1000).toISOString()};}
@@ -12,7 +13,52 @@ const REVIEW_SELECT='SELECT r.*,s.slug,s.language,u.name AS user_name,u.email AS
 const locale=z.enum(['ar','en']).optional();
 export const adminRoutes=new Hono<AppEnv>();
 adminRoutes.use('*',authenticated,staff);
-adminRoutes.get('/reviews',async c=>{const status=c.req.query('status')??'pending';if(!['pending','approve','reject','changes','suspend','all'].includes(status))fail('INVALID_INPUT');const rows=await c.env.DB.prepare(REVIEW_SELECT+(status==='all'?'':' WHERE r.status=?')+' ORDER BY r.created_at DESC LIMIT 100').bind(...(status==='all'?[]:[status])).all<ReviewRow>();return c.json({reviews:rows.results.map(toReview)});});
+const listQuery = z.object({
+ page: z.coerce.number().int().min(1).max(10000).default(1),
+ limit: z.coerce.number().int().min(1).max(100).default(100),
+ q: z.string().trim().max(100).default(''),
+ status: z.string().max(20).optional(),
+ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+ from: z.string().max(40).optional(), to: z.string().max(40).optional(),
+}).strict();
+function listFilters(query: Record<string,string>) {
+ const parsed = listQuery.safeParse(query);
+ if (!parsed.success) fail('INVALID_INPUT');
+ const q = parsed.data;
+ function timestamp(value: string): number {
+  const time = /^\d{1,11}$/.test(value) ? Number(value)
+   : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value)
+    ? Date.parse(value) / 1000 : NaN;
+  if (!Number.isFinite(time) || time < 0 || time > 253402300799) fail('INVALID_INPUT');
+  return Math.floor(time);
+ }
+ let from = q.from === undefined ? undefined : timestamp(q.from);
+ let to = q.to === undefined ? undefined : timestamp(q.to);
+ if (q.date) {
+  const date = new Date(q.date + 'T00:00:00Z');
+  if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0,10) !== q.date) fail('INVALID_INPUT');
+  from = Math.max(from ?? 0, date.getTime()/1000);
+  to = Math.min(to ?? Infinity, date.getTime()/1000 + 86399);
+ }
+ if (from !== undefined && to !== undefined && from > to) fail('INVALID_INPUT');
+ return {...q, from, to};
+}
+adminRoutes.get('/reviews', async c => {
+ const q = listFilters(c.req.query()), status = q.status ?? 'pending';
+ if (!['pending','approve','reject','changes','suspend','all'].includes(status)) fail('INVALID_INPUT');
+ const where: string[] = [], args: unknown[] = [];
+ if (status !== 'all') { where.push('r.status=?'); args.push(status); }
+ if (q.q) {
+  where.push("(instr(lower(r.id || ' ' || s.slug || ' ' || u.name || ' ' || u.email),lower(?))>0)");
+  args.push(q.q);
+ }
+ if (q.from !== undefined) { where.push('r.created_at>=?'); args.push(q.from); }
+ if (q.to !== undefined) { where.push('r.created_at<=?'); args.push(q.to); }
+ const rows = await c.env.DB.prepare(REVIEW_SELECT + (where.length ? ' WHERE ' + where.join(' AND ') : '')
+  + ' ORDER BY r.created_at DESC,r.id DESC LIMIT ? OFFSET ?')
+  .bind(...args,q.limit+1,(q.page-1)*q.limit).all<ReviewRow>();
+ return c.json({reviews: rows.results.slice(0,q.limit).map(toReview), nextPage: rows.results.length>q.limit ? q.page+1 : null});
+});
 adminRoutes.get('/reviews/:id',async c=>{const row=await c.env.DB.prepare(REVIEW_SELECT+' WHERE r.id=?').bind(c.req.param('id')).first<ReviewRow>();if(!row)fail('NOT_FOUND',404);return c.json({review:toReview(row)});});
 adminRoutes.post('/reviews/:id/decision',async c=>{
  const data=await body(c,z.object({decision:z.enum(['approve','reject','changes','suspend']),note:z.string().max(2000).optional(),locale}).strict()),actor=c.get('user')!,id=c.req.param('id'),time=now();
@@ -26,7 +72,22 @@ adminRoutes.post('/reviews/:id/decision',async c=>{
  stmts.push(c.env.DB.prepare(`INSERT INTO notifications(id,user_id,title,body,created_at) SELECT ?,id,CASE WHEN locale='en' THEN ? ELSE ? END,?,? FROM users WHERE id=? AND ${g.sql}`).bind(randomToken(24),title[1],title[0],data.note??'',time,row.owner_id,...g.args??[]));return stmts;
  });let emailAccepted=false;if(c.env.RESEND_API_KEY||c.env.EMAIL){try{const outboxId=id+'-review';await enqueueEmail(c.env,outboxId,reviewEmail(row.user_email,row.slug,row.language,data.decision,data.note??''),time+86400);emailAccepted=(await deliverEmail(c.env,outboxId)).accepted;}catch{console.error('VIP_REVIEW_EMAIL_PENDING');}}return c.json({ok:true,emailAccepted,review:toReview((await c.env.DB.prepare(REVIEW_SELECT+' WHERE r.id=?').bind(id).first<ReviewRow>())!)});
 });
-adminRoutes.get('/users',async c=>{const q=c.req.query('q')??'';if(q.length>100)fail('INVALID_INPUT');const rows=await c.env.DB.prepare("SELECT u.*,EXISTS(SELECT 1 FROM passkeys p WHERE p.user_id=u.id) AS has_passkey,EXISTS(SELECT 1 FROM sites s WHERE s.owner_id=u.id) AS has_site,EXISTS(SELECT 1 FROM sites s WHERE s.owner_id=u.id AND s.status='suspended') AS publication_suspended FROM users u WHERE u.status='active' AND (u.name LIKE ? OR u.email LIKE ? OR CAST(u.public_id AS TEXT)=? OR EXISTS(SELECT 1 FROM sites s WHERE s.owner_id=u.id AND (s.slug LIKE ? OR json_extract(s.draft_json,'$.country') LIKE ? OR json_extract(s.draft_json,'$.city') LIKE ? OR json_extract(s.draft_json,'$.specialty') LIKE ?))) ORDER BY u.public_id LIMIT 100").bind('%'+q+'%','%'+q+'%',q,...Array(4).fill('%'+q+'%')).all<UserRow&{has_passkey:number;has_site:number;publication_suspended:number}>();return c.json({users:rows.results.map(u=>({...publicUser(u,!!u.has_passkey),hasSite:!!u.has_site,publicationSuspended:!!u.publication_suspended}))});});
+adminRoutes.get('/users', async c => {
+ const q = listFilters(c.req.query()), status = q.status ?? 'all';
+ if (!['all','suspended','not-suspended'].includes(status)) fail('INVALID_INPUT');
+ const where = ["u.status='active'"], args: unknown[] = [];
+ if (q.q) {
+  where.push("(instr(lower(u.name || ' ' || u.email || ' ' || CAST(u.public_id AS TEXT)),lower(?))>0 OR EXISTS(SELECT 1 FROM sites s WHERE s.owner_id=u.id AND instr(lower(s.slug || ' ' || COALESCE(json_extract(s.draft_json,'$.country'),'') || ' ' || COALESCE(json_extract(s.draft_json,'$.city'),'') || ' ' || COALESCE(json_extract(s.draft_json,'$.specialty'),'')),lower(?))>0))");
+  args.push(q.q,q.q);
+ }
+ if (status !== 'all') where.push((status === 'not-suspended' ? 'NOT ' : '') + "EXISTS(SELECT 1 FROM sites s WHERE s.owner_id=u.id AND s.status='suspended')");
+ if (q.from !== undefined) { where.push('u.created_at>=?'); args.push(q.from); }
+ if (q.to !== undefined) { where.push('u.created_at<=?'); args.push(q.to); }
+ const rows = await c.env.DB.prepare("SELECT u.*,EXISTS(SELECT 1 FROM passkeys p WHERE p.user_id=u.id) AS has_passkey,EXISTS(SELECT 1 FROM sites s WHERE s.owner_id=u.id) AS has_site,EXISTS(SELECT 1 FROM sites s WHERE s.owner_id=u.id AND s.status='suspended') AS publication_suspended FROM users u WHERE "
+  + where.join(' AND ') + ' ORDER BY u.public_id,u.id LIMIT ? OFFSET ?')
+  .bind(...args,q.limit+1,(q.page-1)*q.limit).all<UserRow&{has_passkey:number;has_site:number;publication_suspended:number}>();
+ return c.json({users: rows.results.slice(0,q.limit).map(u=>({...publicUser(u,!!u.has_passkey),hasSite:!!u.has_site,publicationSuspended:!!u.publication_suspended})), nextPage: rows.results.length>q.limit ? q.page+1 : null});
+});
 adminRoutes.post('/users/:id/publication',async c=>{const data=await body(c,z.object({suspended:z.boolean(),locale}).strict()),actor=c.get('user')!,id=c.req.param('id'),time=now();const site=await c.env.DB.prepare('SELECT id,status,published_json,pending_review FROM sites WHERE owner_id=?').bind(id).first<{id:string;status:string;published_json:string|null;pending_review:string|null}>();if(!site)fail('NOT_FOUND',404);await auditedBatch(c.env,{actor:actor.id,action:data.suspended?'site.suspend':'site.restore',object:site.id},and(staffSQL(actor),{sql:"EXISTS(SELECT 1 FROM sites s JOIN users u ON u.id=s.owner_id WHERE s.id=? AND s.owner_id=? AND s.status=? AND u.status='active')",args:[site.id,id,site.status]}),eventId=>{const g=gate(eventId);return[c.env.DB.prepare(`UPDATE sites SET disclosure_revision=disclosure_revision+1,status=?,updated_at=? WHERE id=? AND ${g.sql}`).bind(data.suspended?'suspended':site.pending_review?'review':site.published_json?'published':'draft',time,site.id,...g.args??[])];});return c.json({ok:true,hasSite:true,publicationSuspended:data.suspended});});
 adminRoutes.post('/users/:id/role',root,async c=>{
  stepUp(c);const data=await body(c,z.object({role:z.enum(['principal','moderator','user']),locale}).strict()),actor=c.get('user')!,id=c.req.param('id');
@@ -56,7 +117,8 @@ export function toBlog(r:Record<string,unknown>){return{id:r.id,slug:r.slug,titl
 adminRoutes.post('/notifications',async c=>{
  const data=await body(c,z.object({userIds:z.array(z.string().max(80)).max(500).optional(),publicIds:z.array(z.number().int().positive()).max(500).optional(),all:z.boolean().optional(),title:z.string().min(1).max(300),body:z.string().max(6000),type:z.enum(['normal','special']).default('normal'),locale}).strict()),actor=c.get('user')!;if(!data.all&&!data.userIds?.length&&!data.publicIds?.length)fail('INVALID_INPUT');
  const where=["status='active'"],args:unknown[]=[];if(!data.all){const clauses=[];if(data.userIds?.length){clauses.push(`id IN (${data.userIds.map(()=>'?').join(',')})`);args.push(...data.userIds);}if(data.publicIds?.length){clauses.push(`public_id IN (${data.publicIds.map(()=>'?').join(',')})`);args.push(...data.publicIds);}where.push('('+clauses.join(' OR ')+')');}
- const time=now();await auditedBatch(c.env,{actor:actor.id,action:'notifications.send',object:'batch-'+randomToken(16)},staffSQL(actor),eventId=>{const g=gate(eventId);return[c.env.DB.prepare(`INSERT INTO notifications(id,user_id,title,body,type,created_at) SELECT lower(hex(randomblob(24))),id,?,?,?,? FROM users WHERE ${where.join(' AND ')} AND ${g.sql}`).bind(data.title,data.body,data.type,time,...args,...g.args??[])];});return c.json({ok:true});
+ const recipients=c.env.PUSH_ENABLED==='true'?await c.env.DB.prepare(`SELECT id FROM users WHERE ${where.join(' AND ')} LIMIT 5000`).bind(...args).all<{id:string}>():null;
+ const time=now();const event=await auditedBatch(c.env,{actor:actor.id,action:'notifications.send',object:'batch-'+randomToken(16)},staffSQL(actor),eventId=>{const g=gate(eventId);return[c.env.DB.prepare(`INSERT INTO notifications(id,user_id,title,body,type,created_at) SELECT lower(hex(randomblob(24))),id,?,?,?,? FROM users WHERE ${where.join(' AND ')} AND ${g.sql}`).bind(data.title,data.body,data.type,time,...args,...g.args??[])];});if(recipients)c.executionCtx.waitUntil(sendPushForUsers(c.env,recipients.results.map(x=>x.id),{title:data.title,body:data.body,url:'/account',messageTopic:event}).catch(()=>{console.error('VIP_PUSH_PENDING');}));return c.json({ok:true,stored:true});
 });
 async function auditQuery(c:Parameters<typeof body>[0],exporting=false){
  const parsed=z.object({action:z.string().max(80).optional(),actor:z.string().max(80).optional(),object:z.string().max(100).optional(),from:z.coerce.number().int().nonnegative().optional(),to:z.coerce.number().int().nonnegative().optional(),limit:z.coerce.number().int().min(1).max(exporting?5000:200).optional(),format:z.enum(['json','csv']).optional()}).strict().safeParse(c.req.query());if(!parsed.success)fail('INVALID_INPUT');const q=parsed.data,where:string[]=[],args:unknown[]=[];

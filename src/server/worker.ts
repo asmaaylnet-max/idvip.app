@@ -33,7 +33,7 @@ async function handle(request:Request,env:Env,ctx:ExecutionContext):Promise<Resp
   if(request.method!=='GET')return new Response(null,{status:405});
   const match=/^\/api\/(export|vcard)\/([a-z0-9-]{1,63})(?:\/(profile|ats)\.pdf)?$/.exec(url.pathname);if(!match)return new Response(null,{status:404});
   const profile=await loadPublic(env,match[2],lang);if(!profile)return Response.json({error:localized('NOT_FOUND',lang)},{status:404,headers:{'Cache-Control':'no-store'}});
-  if(match[1]==='vcard')return new Response(buildVCard(profile.data),{headers:{'Content-Type':'text/vcard; charset=utf-8','Content-Disposition':`attachment; filename="${profile.slug}.vcf"`,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
+  if(match[1]==='vcard')return new Response(buildVCard(profile.data,`https://${profile.slug}.idvip.app/`),{headers:{'Content-Type':'text/vcard; charset=utf-8','Content-Disposition':`attachment; filename="${profile.slug}.vcf"`,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
   if(!match[3]||!env.BROWSER)return Response.json({error:localized('SERVICE_UNAVAILABLE',lang)},{status:503});
   await rateLimit(env,'pdf:'+profile.slug+':'+(request.headers.get('CF-Connecting-IP')||'unknown'),4,60);
   const html=renderProfileDocument(profile.data,profile.isDemo?lang:profile.language,theme,match[3] as 'profile'|'ats');
@@ -71,7 +71,7 @@ async function handle(request:Request,env:Env,ctx:ExecutionContext):Promise<Resp
  }
  if(host.endsWith('.idvip.app')&&!pageHosts.has(first)&&!aliases[first]&&!path.startsWith('/site/')&&!isAsset)return new Response('VIP — unavailable',{status:404});
  const template=await env.ASSETS.fetch(new Request(new URL('/index.html',url)));if(!template.ok)return new Response('VIP unavailable',{status:503});
- let html=fillHTML(await template.text(),url,body,extraHead);if(profile)html=html.replace(/<title>.*?<\/title>/,`<title>${escapeHTML(profile.data.name||'VIP')} — VIP</title>`);
+ const renderURL=new URL(url);if(profile&&!renderURL.searchParams.has('lang'))renderURL.searchParams.set('lang',profile.language);let html=fillHTML(await template.text(),renderURL,body,extraHead);if(profile)html=html.replace(/<title>.*?<\/title>/,`<title>${escapeHTML(profile.data.name||'VIP')} — VIP</title>`);
  return new Response(request.method==='HEAD'?null:html,{headers:{...responseHeaders(privatePage),'X-VIP-Phase':env.PHASE}});
 }
-export default {async fetch(request:Request,env:Env,ctx:ExecutionContext){try{return await handle(request,env,ctx);}catch(error){console.error('VIP_RUNTIME_FAILURE',error instanceof Error?error.name:'Error');return Response.json({error:'الخدمة غير متاحة مؤقتاً. / Service temporarily unavailable.'},{status:503,headers:{'Cache-Control':'no-store'}});}}};
+export default {async fetch(request:Request,env:Env,ctx:ExecutionContext){try{return await handle(request,env,ctx);}catch(error){console.error('VIP_RUNTIME_FAILURE',error instanceof Error?error.name:'Error');const lang:Lang=request.headers.get('X-Locale')==='en'||new URL(request.url).searchParams.get('lang')==='en'?'en':'ar';return Response.json({error:localized('SERVICE_UNAVAILABLE',lang)},{status:503,headers:{'Cache-Control':'no-store'}});}}};

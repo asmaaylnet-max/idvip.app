@@ -7,6 +7,7 @@ export interface Env {
  DB: D1Database; MEDIA?: R2Bucket; RESEND_API_KEY?: string; SESSION_SECRET: string;
  PUBLIC_ORIGIN: string; COOKIE_MODE: 'preview'|'production'; RP_ID?: string;
  EMAIL?: { send(message: {from:string;to:string;subject:string;html:string;text:string;replyTo:string}): Promise<unknown> };
+ VAPID_PUBLIC_KEY?:string;VAPID_PRIVATE_KEY?:string;VAPID_SUBJECT?:string;PUSH_ENABLED?:string;PUSH_ALLOWED_PROVIDERS?:string;
 }
 export interface SessionRow { token_hash:string;user_id:string;csrf:string;created_at:number;expires_at:number;auth_at:number; }
 export interface UserRow { id:string;email:string;name:string;role:Role;public_id:number;locale:Lang;password_hash:string|null;status:string;verified_at:number;created_at:number; }

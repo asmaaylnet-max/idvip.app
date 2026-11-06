@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { api as backendApi, ApiError } from "../api";
 import { useUI } from "../components/Context";
+import { registerNavigationGuard } from "../navigation";
 import {
   Busy,
   Empty,
@@ -100,6 +101,8 @@ function useLocalizedAPI() {
 }
 function message(error: unknown, t: Text): string {
   if (error instanceof ApiError) {
+    if (error.status === 503 && ['EMAIL_UNKNOWN', 'EMAIL_UNAVAILABLE'].includes(error.code || ''))
+      return pendingEmail(t);
     if (error.code === "PRIVACY_REVIEW") return t(
       "لم نغيّر الظهور العام. زيادة الإفصاح تحتاج مسودة وطلب تعديل وموافقة، ولا يمكن إظهار ملف موقوف أو غير معتمد.",
       "Public visibility was not changed. Revealing more requires a draft, an edit request and approval; suspended or unapproved profiles cannot be shown.",
@@ -154,6 +157,18 @@ function message(error: unknown, t: Text): string {
   return t(
     "تعذر الاتصال أو إتمام العملية. احتفظنا بالمدخلات؛ حاول مجدداً.",
     "Unable to connect or complete the action. Your input is preserved; please try again.",
+  );
+}
+function deliveryId(error: unknown, key: 'challengeId' | 'invitationId'): string | null {
+  if (!(error instanceof ApiError) || error.status !== 503 ||
+    !['EMAIL_UNKNOWN', 'EMAIL_UNAVAILABLE'].includes(error.code || '')) return null;
+  const value = error.details[key];
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{20,80}$/.test(value) ? value : null;
+}
+function pendingEmail(t: Text): string {
+  return t(
+    "لم يُؤكّد قبول البريد للإرسال. الإرسال معلّق أو نتيجته غير معروفة؛ استخدم الرمز إن وصل، أو أعد محاولة الرسالة نفسها.",
+    "Email acceptance was not confirmed. Sending is pending or its outcome is unknown; use the code if it arrives, or retry the same message.",
   );
 }
 const localeFor = (lang: string) => (lang === "ar" ? "ar-SA" : "en-US");
@@ -305,6 +320,8 @@ function AuthScreen({
     [age, setAge] = useState(false),
     [accurate, setAccurate] = useState(false);
   const [acceptInvitation, setAcceptInvitation] = useState(false);
+  const [consentRequired, setConsentRequired] = useState(false);
+  const [acceptCustody, setAcceptCustody] = useState(false);
   const [password, setPassword] = useState(""),
     [confirm, setConfirm] = useState(""),
     [code, setCode] = useState(""),
@@ -353,6 +370,10 @@ function AuthScreen({
     try {
       await fn();
     } catch (e) {
+      if (e instanceof ApiError && e.details.consentRequired === true) {
+        setConsentRequired(true);
+        setStep('code');
+      }
       setError(message(e, t));
     } finally {
       setBusy(false);
@@ -382,40 +403,67 @@ function AuthScreen({
       return;
     }
     await run(async () => {
-      const r = await api<{ challengeId: string }>("/auth/request", {
-        method: "POST",
-        json: {
-          purpose: mode,
-          email,
-          locale: u.lang,
-          ...(inviteId
-            ? { inviteId, termsAccepted: terms, ageConfirmed: age }
-            : {}),
-          ...(mode === "signup"
-            ? {
-                name,
-                slug,
-                language,
-                phone,
-                whatsapp,
-                termsAccepted: terms,
-                ageConfirmed: age,
-              }
-            : {}),
-        },
-      });
-      setChallengeId(r.challengeId);
-      setStep("code");
-      setNotice(
-        t(
+      try {
+        const r = await api<{ challengeId: string; consentRequired?: boolean }>("/auth/request", {
+          method: "POST",
+          json: {
+            purpose: mode,
+            email,
+            locale: u.lang,
+            ...(inviteId ? { inviteId, termsAccepted: terms, ageConfirmed: age } : {}),
+            ...(mode === "signup" ? {
+              name, slug, language, phone, whatsapp,
+              termsAccepted: terms, ageConfirmed: age,
+            } : {}),
+          },
+        });
+        setConsentRequired(r.consentRequired === true);
+        setAcceptCustody(false);
+        if (r.consentRequired === true) { setTerms(false); setAge(false); }
+        setChallengeId(r.challengeId);
+        setStep("code");
+        setNotice(t(
           "قُبلت رسالة التحقق للإرسال. افحص بريدك والرسائل غير المرغوبة.",
           "Your verification email was accepted for sending. Check your inbox and spam folder.",
-        ),
-      );
+        ));
+      } catch (error) {
+        const savedId = deliveryId(error, 'challengeId');
+        if (!savedId) throw error;
+        const needsConsent = error instanceof ApiError && error.details.consentRequired === true;
+        setConsentRequired(needsConsent);
+        setAcceptCustody(false);
+        if (needsConsent) { setTerms(false); setAge(false); }
+        setChallengeId(savedId);
+        setStep("code");
+        setError(pendingEmail(t));
+      }
+    });
+  }
+  async function retryCode() {
+    if (!challengeId) return;
+    await run(async () => {
+      try {
+        const r = await api<{ consentRequired?: boolean }>("/auth/request", {
+          method: "POST",
+          json: { email, purpose: mode, challengeId, locale: u.lang },
+        });
+        if (r.consentRequired === true) setConsentRequired(true);
+        setNotice(t("قُبلت الرسالة نفسها للإرسال، وليس تأكيدًا لوصولها.", "The same message was accepted for sending; delivery is not confirmed."));
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 503 &&
+          ['EMAIL_UNKNOWN', 'EMAIL_UNAVAILABLE'].includes(error.code || '')) {
+          if (error.details.consentRequired === true) setConsentRequired(true);
+          setError(pendingEmail(t));
+        } else throw error;
+      }
     });
   }
   async function verify(e: FormEvent) {
     e.preventDefault();
+    if (consentRequired && (!terms || !age || !acceptCustody)) {
+      setError(t("اقبل الشروط وأكد العمر واستلام الحساب أولًا.", "Accept the terms, confirm your age and accept account custody first."));
+      return;
+    }
     await run(async () => {
       const r = await api<Session>("/auth/verify", {
         method: "POST",
@@ -424,6 +472,7 @@ function AuthScreen({
           pin: code,
           locale: u.lang,
           ...(inviteId ? { acceptInvitation } : {}),
+          ...(consentRequired ? { acceptCustody, termsAccepted: terms, ageConfirmed: age } : {}),
         },
       });
       setVerified(r);
@@ -816,16 +865,37 @@ function AuthScreen({
               dir="ltr"
               required
             />
-            <MetalButton type="submit" disabled={busy || code.length !== 6}>
+            {consentRequired && <div className="account-notice">
+              <p>{t("استلام حساب مدار: لن ينتهي تفويض المشغّل إلا بعد تحقق الرمز وموافقتك الصريحة.", "Receive a managed account: operator custody ends only after code verification and your explicit consent.")}</p>
+              <label className="account-check">
+                <input type="checkbox" checked={terms} onChange={e => setTerms(e.target.checked)} required />
+                <span>{t("أوافق على", "I agree to the")} <a href="/terms">{t("الشروط", "terms")}</a> {t("و", "and")} <a href="/privacy">{t("الخصوصية", "privacy policy")}</a>.</span>
+              </label>
+              <label className="account-check">
+                <input type="checkbox" checked={age} onChange={e => setAge(e.target.checked)} required />
+                {t("أؤكد أن عمري 18 عامًا أو أكثر.", "I confirm I am at least 18 years old.")}
+              </label>
+              <label className="account-check">
+                <input type="checkbox" checked={acceptCustody} onChange={e => setAcceptCustody(e.target.checked)} required />
+                {t("أوافق على استلام الحساب وإنهاء عهدة المشغّل.", "I accept account custody and end the operator's custody.")}
+              </label>
+            </div>}
+            <MetalButton type="submit" disabled={busy || code.length !== 6 || (consentRequired && (!terms || !age || !acceptCustody))}>
               {busy
                 ? t("جارٍ التحقق…", "Verifying…")
                 : t("تحقق وتابع", "Verify and continue")}
+            </MetalButton>
+            <MetalButton type="button" disabled={busy || !challengeId} onClick={retryCode}>
+              {t("إعادة محاولة الرسالة نفسها", "Retry the same message")}
             </MetalButton>
             <button
               type="button"
               className="account-text-button"
               onClick={() => {
                 setStep("details");
+                setChallengeId("");
+                setConsentRequired(false);
+                setAcceptCustody(false);
                 setCode("");
                 setError("");
               }}
@@ -1038,6 +1108,7 @@ function EditorScreen({
     window.addEventListener("pagehide", leave);
     window.addEventListener("beforeunload", beforeUnload);
     document.addEventListener("visibilitychange", visibility);
+    const unregisterNavigation=registerNavigationGuard(flush);
     return () => {
       active = false;
       mounted.current = false;
@@ -1046,6 +1117,7 @@ function EditorScreen({
       window.removeEventListener("pagehide", leave);
       window.removeEventListener("beforeunload", beforeUnload);
       document.removeEventListener("visibilitychange", visibility);
+      unregisterNavigation();
     };
   }, [flush]);
   useEffect(() => {
@@ -2256,6 +2328,23 @@ function AdminScreen({ user }: { user: User }) {
   const [filter, setFilter] = useState(""),
     [status, setStatus] = useState("pending"),
     [date, setDate] = useState("");
+  const [appliedFilter, setAppliedFilter] = useState("");
+  const [nextPage, setNextPage] = useState<number | null>(null);
+  const [listBusy, setListBusy] = useState(false);
+  const listGeneration = useRef(0);
+  const [pendingInvitationId, setPendingInvitationId] = useState("");
+  useEffect(() => {
+    const timer = window.setTimeout(() => setAppliedFilter(filter), 300);
+    return () => clearTimeout(timer);
+  }, [filter]);
+  function listPath(page = 1) {
+    const query = new URLSearchParams({ page: String(page), limit: '100', q: appliedFilter });
+    if (tab === 'reviews') {
+      query.set('status', status || 'all');
+      if (date) query.set('date', date);
+    }
+    return '/admin/' + tab + '?' + query.toString();
+  }
   const [inviteEmail, setInviteEmail] = useState(""),
     [inviteName, setInviteName] = useState(""),
     [inviteRole, setInviteRole] = useState<"moderator" | "principal">(
@@ -2291,20 +2380,21 @@ function AdminScreen({ user }: { user: User }) {
       return;
     }
     let active = true;
-    setLoading(true);
+    listGeneration.current += 1;
+    setNextPage(null);
+    setListBusy(tab === 'reviews' || tab === 'users');
+    setLoading(tab !== 'reviews' && tab !== 'users');
     setError("");
     async function load() {
       switch (tab) {
         case "reviews": {
-          const r = await api<{ reviews: Review[] }>(
-            "/admin/reviews?status=all",
-          );
-          if (active) setReviews(r.reviews);
+          const r = await api<{ reviews: Review[]; nextPage: number | null }>(listPath());
+          if (active) { setReviews(r.reviews); setNextPage(r.nextPage); }
           break;
         }
         case "users": {
-          const r = await api<{ users: AdminUser[] }>("/admin/users");
-          if (active) setUsers(r.users);
+          const r = await api<{ users: AdminUser[]; nextPage: number | null }>(listPath());
+          if (active) { setUsers(r.users); setNextPage(r.nextPage); }
           break;
         }
         case "settings": {
@@ -2345,12 +2435,29 @@ function AdminScreen({ user }: { user: User }) {
         if (active) setError(message(e, t));
       })
       .finally(() => {
-        if (active) setLoading(false);
+        if (active) { setLoading(false); setListBusy(false); }
       });
     return () => {
       active = false;
     };
-  }, [tab, refresh, permitted]);
+  }, [tab, refresh, permitted, appliedFilter, status, date]);
+  async function loadMore() {
+    if (!nextPage || listBusy) return;
+    const generation = listGeneration.current;
+    setListBusy(true);
+    setError('');
+    try {
+      const r = await api<{ reviews?: Review[]; users?: AdminUser[]; nextPage: number | null }>(listPath(nextPage));
+      if (generation !== listGeneration.current) return;
+      if (r.reviews) setReviews(previous => [...previous, ...r.reviews!.filter(row => !previous.some(old => old.id === row.id))]);
+      if (r.users) setUsers(previous => [...previous, ...r.users!.filter(row => !previous.some(old => old.id === row.id))]);
+      setNextPage(r.nextPage);
+    } catch (error) {
+      if (generation === listGeneration.current) setError(message(error,t));
+    } finally {
+      if (generation === listGeneration.current) setListBusy(false);
+    }
+  }
   async function act(
     fn: () => Promise<void>,
     success = t("تم حفظ الإجراء", "Action saved"),
@@ -2393,15 +2500,7 @@ function AdminScreen({ user }: { user: User }) {
     ["notifications", "إرسال إشعار", "Send notification"],
     ["reserves", "الأسماء المحجوزة", "Reserved names"],
   ];
-  const filtered = reviews.filter(
-    (r) =>
-      (!status || r.status === status) &&
-      (!date || r.createdAt.slice(0, 10) === date) &&
-      (!filter ||
-        `${r.id} ${r.slug} ${r.userName} ${r.userEmail}`
-          .toLowerCase()
-          .includes(filter.toLowerCase())),
-  );
+  const filtered = reviews;
   return (
     <div className="account-page admin-page">
       <PageHeading
@@ -2511,7 +2610,8 @@ function AdminScreen({ user }: { user: User }) {
                   />
                 </div>
               </Panel>
-              {!filtered.length ? (
+              {listBusy && <Busy />}
+              {!listBusy && !error && !filtered.length ? (
                 <Empty
                   text={t("لا توجد طلبات مطابقة.", "No matching reviews.")}
                 />
@@ -2536,10 +2636,17 @@ function AdminScreen({ user }: { user: User }) {
                   />
                 ))
               )}
+              {nextPage && <>
+                <p className="account-help">{t("هذه ليست القائمة الكاملة؛ توجد نتائج إضافية.", "This is not the complete list; more results are available.")}</p>
+                <MetalButton disabled={listBusy} onClick={loadMore}>{t("تحميل المزيد", "Load more")}</MetalButton>
+              </>}
             </>
           )}
           {tab === "users" && (
             <>
+              {full && <MetalButton onClick={() => u.navigate('/admin/managed')}>
+                {t("مساحة إدارة الحسابات المدارة", "Managed accounts workspace")}
+              </MetalButton>}
               <Panel>
                 <h2>{t("دعوة وتفويض", "Invite and delegate")}</h2>
                 <p className="account-help">
@@ -2553,6 +2660,7 @@ function AdminScreen({ user }: { user: User }) {
                     e.preventDefault();
                     void act(
                       async () => {
+                        try {
                         await api("/admin/invite", {
                           method: "POST",
                           json: {
@@ -2570,11 +2678,17 @@ function AdminScreen({ user }: { user: User }) {
                             locale: u.lang,
                           },
                         });
+                        } catch (error) {
+                          const id = deliveryId(error, 'invitationId');
+                          if (id) setPendingInvitationId(id);
+                          throw error;
+                        }
+                        setPendingInvitationId('');
                         setInviteEmail("");
                         setInviteName("");
                         setRefresh((v) => v + 1);
                       },
-                      t("أُرسلت الدعوة", "Invitation sent"),
+                      t("قُبل بريد الدعوة للإرسال؛ لم يُؤكّد الوصول أو القبول.", "Invitation email accepted for sending; delivery or recipient acceptance is not confirmed."),
                     );
                   }}
                 >
@@ -2663,10 +2777,24 @@ function AdminScreen({ user }: { user: User }) {
                       required
                     />
                   )}
-                  <MetalButton type="submit" disabled={busy || !full}>
+                  <MetalButton type="submit" disabled={busy || !full || !!pendingInvitationId}>
                     <Send size={17} />
                     {t("إرسال الدعوة", "Send invitation")}
                   </MetalButton>
+                  {pendingInvitationId && full && <div className="account-notice" role="status">
+                    <p>{t("حُفظت الدعوة ولم يُؤكّد الإرسال؛ إعادة المحاولة لا تنشئ دعوة جديدة.", "The invitation is saved and sending is unconfirmed; retry does not create another invitation.")}</p>
+                    <MetalButton type="button" disabled={busy} onClick={() => act(async () => {
+                      await api(`/admin/outbox/${encodeURIComponent(pendingInvitationId)}/retry`, { method: 'POST', json: { locale: u.lang } });
+                      setPendingInvitationId('');
+                      setInviteEmail('');
+                      setInviteName('');
+                    }, t("قُبل بريد الدعوة نفسها للإرسال.", "The same invitation email was accepted for sending."))}>
+                      {t("إعادة محاولة الدعوة نفسها", "Retry the same invitation")}
+                    </MetalButton>
+                    <button type="button" className="account-text-button" disabled={busy} onClick={() => setPendingInvitationId('')}>
+                      {t("بدء دعوة جديدة صراحةً", "Explicitly start a new invitation")}
+                    </button>
+                  </div>}
                   {!full && (
                     <p className="account-help">
                       {t(
@@ -2683,12 +2811,8 @@ function AdminScreen({ user }: { user: User }) {
                   value={filter}
                   onChange={setFilter}
                 />
+                {listBusy && <Busy />}
                 {users
-                  .filter((x) =>
-                    `${x.name} ${x.email} ${x.publicId}`
-                      .toLowerCase()
-                      .includes(filter.toLowerCase()),
-                  )
                   .map((x) => (
                     <article className="admin-user" key={x.id}>
                       <div>
@@ -2771,9 +2895,13 @@ function AdminScreen({ user }: { user: User }) {
                         )}
                     </article>
                   ))}
-                {!users.length && (
-                  <Empty text={t("لا يوجد مستخدمون.", "No users.")} />
+                {!listBusy && !error && !users.length && (
+                  <Empty text={t("لا يوجد مستخدمون مطابقون.", "No matching users.")} />
                 )}
+                {nextPage && <>
+                  <p className="account-help">{t("هذه ليست القائمة الكاملة؛ توجد نتائج إضافية.", "This is not the complete list; more results are available.")}</p>
+                  <MetalButton disabled={listBusy} onClick={loadMore}>{t("تحميل المزيد", "Load more")}</MetalButton>
+                </>}
                 {deleteId && full && (
                   <div className="account-danger">
                     <p>

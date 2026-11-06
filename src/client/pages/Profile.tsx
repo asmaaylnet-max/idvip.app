@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import QRCode from 'qrcode';
-import { Award, BookOpen, Briefcase, ContactRound, Download, ExternalLink, FileText, Globe, Heart, Image as ImageIcon, Languages, Link2, Mail, MapPin, MessageCircle, Phone, Play, QrCode, Share2, Sparkles, StickyNote } from 'lucide-react';
+import { Award, BookOpen, Briefcase, ContactRound, Download, ExternalLink, FileText, Globe, Heart, Image as ImageIcon, Languages, Link2, Mail, MapPin, MessageCircle, Phone, Play, QrCode, Share2, Sparkles, StickyNote,Linkedin,Facebook,Instagram,Ghost,Music2,Send } from 'lucide-react';
 import { api, ApiError } from '../api';
 import { useUI } from '../components/Context';
 import { Busy, ErrorBox } from '../components/UI';
@@ -13,6 +13,7 @@ type Props = { slug?: string; preview?: boolean; reviewId?: string };
 type LoadedProfile = { key: string; profile: PublicProfile };
 type ReviewResponse = { review: Review & { language?: Lang }; language?: Lang; site?: Pick<Site, 'language'> };
 const networkNames = { linkedin: 'LinkedIn', facebook: 'Facebook', instagram: 'Instagram', x: 'X', youtube: 'YouTube', snapchat: 'Snapchat', tiktok: 'TikTok', telegram: 'Telegram' };
+const networkMarks={linkedin:Linkedin,facebook:Facebook,instagram:Instagram,youtube:Play,snapchat:Ghost,tiktok:Music2,telegram:Send};
 
 function Section({ title, icon, children, className = '' }: { title: string; icon?: ReactNode; children: ReactNode; className?: string }) {
   const id = useId();
@@ -176,7 +177,7 @@ export default function ProfilePage({ slug = 'test', preview = false, reviewId }
     return <main className="vip-profile profile-status" data-theme={u.theme}>{error === null ? <Busy /> : <><ErrorBox error={error === 401 || error === 403 ? text('هذه المعاينة خاصة. يلزم تسجيل الدخول بحساب مخوّل.', 'This preview is private. Sign in with an authorized account.') : error === 404 ? text('هذا الملف غير متاح للنشر العام أو غير موجود.', 'This profile is not publicly available or does not exist.') : text('تعذر تحميل الملف. تحقق من اتصالك ثم حاول مرة أخرى.', 'Unable to load the profile. Check your connection and try again.')} /><button className="profile-action" onClick={() => setRetry(value => value + 1)}>{text('إعادة المحاولة', 'Try again')}</button></>}</main>;
   }
   const siteURL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(profile.slug) ? `https://${profile.slug}.idvip.app` : '';
-  const vCardURL = siteURL ? `${siteURL}/api/vcard/${encodeURIComponent(profile.slug)}` : '';
+  const vCardURL = siteURL ? `${siteURL}/api/vcard/${encodeURIComponent(profile.slug)}?lang=${u.lang}` : '';
   const logo = safeMediaURL(data.logo) || `/brand/logo-${u.theme}-384.webp`;
   const cover = safeMediaURL(data.cover) || `/brand/cover-${u.theme}-1280.webp`;
   const email = emailLink(data.email), phone = telephoneNumber(data.phone), whatsapp = telephoneNumber(data.whatsapp);
@@ -189,7 +190,7 @@ export default function ProfilePage({ slug = 'test', preview = false, reviewId }
     const url = safeExternalURL(data.socials[name] ?? DEFAULT_SOCIALS[name]);
     return url ? [{ name, url }] : [];
   });
-  const downloadContact = () => saveBlob(new Blob([buildVCard(data)], { type: 'text/x-vcard;charset=utf-8' }), `${profile.slug}.vcf`);
+  const downloadContact = () => saveBlob(new Blob([buildVCard(data,siteURL)], { type: 'text/x-vcard;charset=utf-8' }), `${profile.slug}.vcf`);
   async function exportPDF(kind: 'profile' | 'ats') {
     if (privateView || exporting || !profile) return;
     setExporting(kind);
@@ -234,10 +235,10 @@ export default function ProfilePage({ slug = 'test', preview = false, reviewId }
       {data.hobbies.some(Boolean) && <Section title={text('الهوايات', 'Interests')} icon={<Heart size={21} aria-hidden="true" />}><ul className="profile-tags">{data.hobbies.filter(Boolean).map((item, i) => <li key={i}>{item}</li>)}</ul></Section>}
       {data.note && <Section title={text('ملاحظة', 'Note')} icon={<StickyNote size={21} aria-hidden="true" />}><p className="profile-preserve">{data.note}</p></Section>}
     </div>
-    {socials.length > 0 && <Section title={text('التواصل الاجتماعي', 'Social networks')} icon={<Globe size={21} aria-hidden="true" />}><nav className="profile-socials" aria-label={text('روابط التواصل الاجتماعي', 'Social network links')}>{socials.map(({ name, url }) => <a key={name} href={url} target="_blank" rel="noopener noreferrer"><span className="profile-social-mark" aria-hidden="true">{name === 'youtube' ? <Play size={17} /> : name === 'telegram' || name === 'snapchat' ? <MessageCircle size={17} /> : <Globe size={17} />}</span>{networkNames[name]}<ExternalLink size={13} aria-hidden="true" /></a>)}</nav></Section>}
+    {socials.length > 0 && <Section title={text('التواصل الاجتماعي', 'Social networks')} icon={<Globe size={21} aria-hidden="true" />}><nav className="profile-socials" aria-label={text('روابط التواصل الاجتماعي', 'Social network links')}>{socials.map(({ name, url }) => {const Mark=name==='x'?null:networkMarks[name];return <a key={name} href={url} target="_blank" rel="noopener noreferrer"><span className="profile-social-mark" aria-hidden="true">{Mark?<Mark size={17}/>:<strong>X</strong>}</span>{networkNames[name]}<ExternalLink size={13} aria-hidden="true" /></a>})}</nav></Section>}
     <Section title={text('شارك هويتك', 'Share your identity')} icon={<QrCode size={21} aria-hidden="true" />} className="profile-sharing">
       {privateView ? <div className="profile-private-output"><p id="profile-private-export">{text('التصدير ورموز QR والمشاركة العامة غير متاحة للمسودة أو نسخة المراجعة. تُتاح للنسخة المنشورة بعد الموافقة، دون نشر بياناتك الخاصة.', 'Export, QR codes and public sharing are unavailable for drafts and review snapshots. They become available for the approved public version, without exposing private data.')}</p><div className="profile-downloads"><button className="profile-action" disabled><FileText size={18} aria-hidden="true" />{text('تنزيل البروفايل PDF', 'Download profile PDF')}</button><button className="profile-action" disabled><FileText size={18} aria-hidden="true" />{text('تنزيل سيرة ATS', 'Download ATS résumé')}</button></div></div> : <>
-        {siteURL && <div className="profile-qr-grid"><QRCard url={siteURL} title={text('رمز الموقع', 'Website QR')} logo={visibleField(data, 'logo') ? logo : ''} filename={`${profile.slug}-site-qr`} /><QRCard url={vCardURL} title={text('رمز جهة الاتصال', 'Contact QR')} logo={visibleField(data, 'logo') ? logo : ''} filename={`${profile.slug}-contact-qr`} /></div>}
+        {siteURL && <div className="profile-qr-grid"><QRCard url={siteURL} title={text('رمز الموقع', 'Website QR')} logo="/brand/logo-dark-192.webp" filename={`${profile.slug}-site-qr`} /><QRCard url={vCardURL} title={text('رمز جهة الاتصال', 'Contact QR')} logo="/brand/logo-dark-192.webp" filename={`${profile.slug}-contact-qr`} /></div>}
         <div className="profile-downloads"><button className="profile-action" onClick={() => void exportPDF('profile')} disabled={Boolean(exporting)}><FileText size={18} aria-hidden="true" />{exporting === 'profile' ? text('جارٍ تجهيز PDF…', 'Preparing PDF…') : text('تنزيل البروفايل PDF', 'Download profile PDF')}</button><button className="profile-action" onClick={() => void exportPDF('ats')} disabled={Boolean(exporting)}><FileText size={18} aria-hidden="true" />{exporting === 'ats' ? text('جارٍ تجهيز ATS…', 'Preparing ATS…') : text('تنزيل سيرة ATS', 'Download ATS résumé')}</button>{siteURL && <button className="profile-action" onClick={() => void shareURL(siteURL, data.name || 'VIP', text, u.toast)}><Share2 size={18} aria-hidden="true" />{text('مشاركة الموقع', 'Share website')}</button>}</div><p className="profile-output-caption">{text('ملفات التصدير وجهة الاتصال تُنشأ من البيانات العامة غير المخفية فقط.', 'Exports and contact details use only visible public data.')}</p>
       </>}
     </Section>
