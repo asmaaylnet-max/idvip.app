@@ -6,7 +6,7 @@ import {EMPTY_PROFILE,type ProfileData} from '../src/shared/types';
 import {type Env,now,randomToken,randomPIN,sha256,hmac,validPassword,hashPassword,verifyPassword,validSlug,trustedOrigin,csvCell} from '../src/server/security';
 import {filterProfile,profileSchema,visibilityShrinks,draftCAS,canDecideReview,referencedMedia} from '../src/server/services/profiles';
 import {inspectWebP} from '../src/server/routes/media';
-import {canFallback} from '../src/server/services/email';
+import {canFallback,deliverEmail,enqueueEmail,otpEmail} from '../src/server/services/email';
 import {verifiedRole} from '../src/server/routes/auth';
 import {auditedBatch,gate} from '../src/server/services/audit';
 
@@ -57,12 +57,12 @@ describe('routes and D1 mutation invariants',()=>{
  it('returns a truthful anonymous session and blocks forged identity',async()=>{const response=await request('/session','GET',undefined,undefined,{'X-User-Identity':'owner'});expect(await response.json()).toEqual({user:null,csrf:null,site:null});expect((await request('/admin/users','GET',undefined,undefined,{'X-User-Identity':'owner'})).status).toBe(401);});
  it('returns 503 instead of fake OTP success without a sender',async()=>{const response=await request('/auth/request','POST',{email:'a@example.com',purpose:'signup',name:'Alice',slug:'alice',language:'en',termsAccepted:true,ageConfirmed:true,locale:'en'});expect(response.status).toBe(503);expect((await response.json() as {error:string}).error).not.toMatch(/[\u0600-\u06ff]/);expect(db.db.prepare('SELECT count(*) n FROM users').get()?.n).toBe(0);});
  it('verifies a real binding-submitted OTP exactly once and sets host-only secure cookie',async()=>{
- const send=vi.fn(async()=>({accepted:true}));env.EMAIL={send};const payload={email:'alice@example.com',purpose:'signup',name:'Alice',slug:'alice',language:'en',termsAccepted:true,ageConfirmed:true,locale:'en'};
+ const send=vi.fn(async()=>({messageId:'native-otp-id'}));env.EMAIL={send};const payload={email:'alice@example.com',purpose:'signup',name:'Alice',slug:'alice',language:'en',termsAccepted:true,ageConfirmed:true,locale:'en'};
  const response=await request('/auth/request','POST',payload);expect(response.status).toBe(200);expect(send).toHaveBeenCalledOnce();const challenge=await response.json() as {challengeId:string};const message=send.mock.calls[0] as unknown as [{text:string;html:string}];const pin=message[0].text.match(/\b\d{6}\b/)![0];expect(message[0].html).toContain('https://idvip.app/brand/');expect(db.db.prepare('SELECT pin_hash FROM otp_challenges').get()?.pin_hash).not.toBe(pin);
  const verified=await request('/auth/verify','POST',{challengeId:challenge.challengeId,pin});expect(verified.status).toBe(200);const result=await verified.json() as {user:{role:string};site:{slug:string};csrf:string};expect(result.user.role).toBe('user');expect(result.site.slug).toBe('alice');expect(result.csrf.length).toBeGreaterThan(30);const cookie=verified.headers.get('Set-Cookie')!;expect(cookie).toContain('__Host-vip_session=');expect(cookie).toContain('HttpOnly');expect(cookie).toContain('Secure');expect(cookie).not.toContain('Domain=');expect((await request('/auth/verify','POST',{challengeId:challenge.challengeId,pin})).status).toBe(400);
  });
  it('limits OTP to six attempts and expires reservations atomically',async()=>{
- env.EMAIL={send:async()=>undefined};const response=await request('/auth/request','POST',{email:'alice@example.com',purpose:'signup',name:'Alice',slug:'alice',language:'en',termsAccepted:true,ageConfirmed:true});const{id,challengeId}=await response.json() as {id?:string;challengeId:string};expect(id).toBeUndefined();for(let i=0;i<7;i++)expect((await request('/auth/verify','POST',{challengeId,pin:'111111'})).status).toBe(400);expect(db.db.prepare('SELECT attempts FROM otp_challenges').get()?.attempts).toBe(6);expect((await request('/availability?slug=alice').then(r=>r.json()) as {available:boolean}).available).toBe(false);
+ env.EMAIL={send:async()=>({messageId:'native-limited-otp-id'})};const response=await request('/auth/request','POST',{email:'alice@example.com',purpose:'signup',name:'Alice',slug:'alice',language:'en',termsAccepted:true,ageConfirmed:true});const{id,challengeId}=await response.json() as {id?:string;challengeId:string};expect(id).toBeUndefined();for(let i=0;i<7;i++)expect((await request('/auth/verify','POST',{challengeId,pin:'111111'})).status).toBe(400);expect(db.db.prepare('SELECT attempts FROM otp_challenges').get()?.attempts).toBe(6);expect((await request('/availability?slug=alice').then(r=>r.json()) as {available:boolean}).available).toBe(false);
  });
  it('rejects missing CSRF and tenant-origin mutations',async()=>{const alice=await fixture();expect((await request('/sites/me/draft','PUT',{data:alice.data,revision:0},alice,{'X-CSRF-Token':''})).status).toBe(403);expect((await request('/sites/me/draft','PUT',{data:alice.data,revision:0},alice,{Origin:'https://evil.idvip.app'})).status).toBe(403);const tenant=await apiApp.request('https://alice.idvip.app/auth/request',{method:'POST',headers:{Origin:'https://idvip.app','Content-Type':'application/json'},body:JSON.stringify({email:'a@example.com',purpose:'login'})},env);expect(tenant.status).toBe(403);});
  it('persists draft with CAS and refuses another owner’s media',async()=>{const alice=await fixture(),bob=await fixture('user','bob');expect((await request('/sites/me/draft','PUT',{data:{...alice.data,bio:'saved'},revision:0},alice)).status).toBe(200);expect((await request('/sites/me/draft','PUT',{data:alice.data,revision:0},alice)).status).toBe(409);const mediaId=randomToken(24);db.db.prepare("INSERT INTO media(id,user_id,object_key,mime,bytes,width,height,created_at) VALUES(?,?,?,'image/webp',26,2,2,?)").run(mediaId,bob.id,'private/bob/image.webp',now());expect((await request('/sites/me/draft','PUT',{data:{...alice.data,logo:'/api/media/'+mediaId},revision:1},alice)).status).toBe(403);expect((await request('/sites/me','GET',undefined,alice).then(r=>r.json()) as {site:{draft:{bio:string}}}).site.draft.bio).toBe('saved');});
@@ -81,10 +81,10 @@ describe('outbox, invitations and unavailable bindings',()=>{
   const payload={email:'alice@example.com',purpose:'signup',name:'Alice',slug:'alice',language:'en',termsAccepted:true,ageConfirmed:true};const result=await request('/auth/request','POST',payload);expect(result.status).toBe(503);const ch=await result.json() as {challengeId:string;code:string};expect(ch.code).toBe('EMAIL_UNKNOWN');expect(send).not.toHaveBeenCalled();expect(db.db.prepare('SELECT delivery_state FROM otp_challenges').get()?.delivery_state).toBe('unknown');
   db.db.prepare('UPDATE email_outbox SET next_attempt_at=0,lease_until=NULL').run();const retry=await request('/auth/request','POST',{email:payload.email,purpose:'signup',challengeId:ch.challengeId});expect(retry.status).toBe(200);expect(fetchMock.mock.calls[0][1].body).toBe(fetchMock.mock.calls[1][1].body);expect(fetchMock.mock.calls[0][1].headers['Idempotency-Key']).toBe(fetchMock.mock.calls[1][1].headers['Idempotency-Key']);expect(send).not.toHaveBeenCalled();expect(db.db.prepare('SELECT payload_cipher FROM email_outbox').get()?.payload_cipher).toBe('');
  });
- it('uses native sender only after an explicit nonaccepted quota response',async()=>{env.RESEND_API_KEY='test-key';const send=vi.fn(async()=>undefined);env.EMAIL={send};vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({name:'daily_quota_exceeded'}),{status:429})));expect((await request('/auth/request','POST',{email:'alice@example.com',purpose:'signup',name:'Alice',slug:'alice',language:'en',termsAccepted:true,ageConfirmed:true})).status).toBe(200);expect(send).toHaveBeenCalledOnce();expect(db.db.prepare('SELECT provider,state FROM email_outbox').get()).toMatchObject({provider:'binding',state:'accepted'});});
+ it('uses native sender only after an explicit nonaccepted quota response',async()=>{env.RESEND_API_KEY='test-key';const send=vi.fn(async()=>({messageId:'native-fallback-id'}));env.EMAIL={send};vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({name:'daily_quota_exceeded'}),{status:429})));expect((await request('/auth/request','POST',{email:'alice@example.com',purpose:'signup',name:'Alice',slug:'alice',language:'en',termsAccepted:true,ageConfirmed:true})).status).toBe(200);expect(send).toHaveBeenCalledOnce();expect(db.db.prepare('SELECT provider,state,provider_id FROM email_outbox').get()).toMatchObject({provider:'binding',state:'accepted',provider_id:'native-fallback-id'});});
  it('never resends after an unknown native sender outcome',async()=>{const send=vi.fn(async()=>{throw Error('acceptance unknown');});env.EMAIL={send};const response=await request('/auth/request','POST',{email:'alice@example.com',purpose:'signup',name:'Alice',slug:'alice',language:'en',termsAccepted:true,ageConfirmed:true});const challenge=await response.json() as {challengeId:string};db.db.prepare('UPDATE email_outbox SET next_attempt_at=0,lease_until=NULL').run();expect((await request('/auth/request','POST',{email:'alice@example.com',purpose:'signup',challengeId:challenge.challengeId})).status).toBe(503);expect(send).toHaveBeenCalledOnce();});
  it('transfers handover ownership only after intended-email OTP and explicit acceptance',async()=>{
-  const owner=await fixture(),admin=await fixture('principal','chief');const messages:{text:string}[]=[];env.EMAIL={send:async(message)=>{messages.push(message);}};
+  const owner=await fixture(),admin=await fixture('principal','chief');const messages:{text:string}[]=[];env.EMAIL={send:async(message)=>{messages.push(message);return{messageId:`native-invitation-${messages.length}`};}};
   const created=await request('/admin/invite','POST',{email:'recipient@example.com',role:'user',mode:'handover',siteId:owner.siteId},admin);expect(created.status).toBe(201);const inviteId=(await created.json() as {invitationId:string}).invitationId;expect(db.db.prepare('SELECT owner_id FROM sites WHERE id=?').get(owner.siteId)?.owner_id).toBe(owner.id);
   expect((await request('/auth/request','POST',{email:'wrong@example.com',purpose:'signup',inviteId,termsAccepted:true,ageConfirmed:true})).status).toBe(400);
   const challenge=await request('/auth/request','POST',{email:'recipient@example.com',purpose:'signup',name:'Recipient',inviteId,termsAccepted:true,ageConfirmed:true}).then(r=>r.json()) as {challengeId:string};const pin=messages[messages.length-1].text.match(/\b\d{6}\b/)![0];expect((await request('/auth/verify','POST',{challengeId:challenge.challengeId,pin})).status).toBe(400);expect(db.db.prepare('SELECT owner_id FROM sites WHERE id=?').get(owner.siteId)?.owner_id).toBe(owner.id);
@@ -100,5 +100,55 @@ describe('historical email uncertainty',()=>{
   const initial=await request('/auth/request','POST',{email:'alice@example.com',purpose:'signup',name:'Alice',slug:'alice',language:'en',termsAccepted:true,ageConfirmed:true});const challenge=await initial.json() as {challengeId:string};
   for(let i=0;i<2;i++){db.db.prepare('UPDATE email_outbox SET next_attempt_at=0,lease_until=NULL').run();if(i)mocked.mockResolvedValueOnce(new Response(JSON.stringify({name:'daily_quota_exceeded'}),{status:429}));const retry=await request('/auth/request','POST',{email:'alice@example.com',purpose:'signup',challengeId:challenge.challengeId});expect(retry.status).toBe(503);expect((await retry.json() as {code:string}).code).toBe('EMAIL_UNKNOWN');}
   expect(send).not.toHaveBeenCalled();expect(db.db.prepare('SELECT state,uncertain,provider FROM email_outbox').get()).toMatchObject({state:'unknown',uncertain:1,provider:'resend'});
+ });
+});
+
+describe('native email API contract',()=>{
+ it.each(['support@idvip.app','VIP <support@idvip.app>','other@example.com'])('restricts native sender %s and records acceptance once',async from=>{
+  const id=randomToken(24),message={...otpEmail('alice@example.com','123456','en'),from};
+  const send=vi.fn(async()=>({messageId:'native-message-id'}));env.EMAIL={send};
+  await enqueueEmail(env,id,message,now()+600);
+  const encrypted=db.db.prepare('SELECT payload_cipher FROM email_outbox WHERE id=?').get(id)?.payload_cipher;
+  expect(encrypted).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);expect(encrypted).not.toContain(message.text);
+  expect(await deliverEmail(env,id)).toEqual({accepted:true,unknown:false});
+  expect(send).toHaveBeenCalledWith({...message,from:'support@idvip.app'});
+  expect(db.db.prepare('SELECT provider,state,provider_id,payload_cipher,attempts FROM email_outbox WHERE id=?').get(id)).toMatchObject({provider:'binding',state:'accepted',provider_id:'native-message-id',payload_cipher:'',attempts:1});
+  expect(await deliverEmail(env,id)).toEqual({accepted:true,unknown:false});expect(send).toHaveBeenCalledOnce();
+ });
+ it.each([
+  ['undefined',undefined],['null',null],['empty object',{}],['legacy accepted flag',{accepted:true}],
+  ['Resend-shaped ID',{id:'not-a-native-result'}],['string','not-a-native-result'],['array',[]],
+  ['numeric ID',{messageId:123}],['empty ID',{messageId:''}],['blank ID',{messageId:' \t\n '}],
+ ] as [string,unknown][])('keeps %s response unknown and never repeats or switches providers',async(_label,result)=>{
+  const send=vi.fn(async()=>result);env.EMAIL={send};
+  const response=await request('/auth/request','POST',{email:'alice@example.com',purpose:'signup',name:'Alice',slug:'alice',language:'en',termsAccepted:true,ageConfirmed:true});
+  expect(response.status).toBe(503);const challenge=await response.json() as {challengeId:string;code:string};expect(challenge.code).toBe('EMAIL_UNKNOWN');
+  const row=db.db.prepare('SELECT provider,state,provider_id,uncertain,payload_cipher,attempts,last_code FROM email_outbox WHERE id=?').get(challenge.challengeId)!;
+  expect(row).toMatchObject({provider:'binding',state:'unknown',provider_id:null,uncertain:1,attempts:1,last_code:'binding_response_unknown'});
+  expect(row.payload_cipher).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+  expect(db.db.prepare('SELECT delivery_state FROM otp_challenges WHERE id=?').get(challenge.challengeId)?.delivery_state).toBe('unknown');
+  const fetchMock=vi.fn(async()=>{throw Error('must not switch providers');});vi.stubGlobal('fetch',fetchMock);
+  for(const resendKey of [undefined,'new-primary-key']){
+   env.RESEND_API_KEY=resendKey;db.db.prepare('UPDATE email_outbox SET next_attempt_at=0,lease_until=NULL').run();
+   const retry=await request('/auth/request','POST',{email:'alice@example.com',purpose:'signup',challengeId:challenge.challengeId});
+   expect(retry.status).toBe(503);expect((await retry.json() as {code:string}).code).toBe('EMAIL_UNKNOWN');
+  }
+  expect(send).toHaveBeenCalledOnce();expect(fetchMock).not.toHaveBeenCalled();
+  expect(db.db.prepare('SELECT payload_cipher,attempts FROM email_outbox WHERE id=?').get(challenge.challengeId)).toMatchObject({payload_cipher:row.payload_cipher,attempts:1});
+ });
+ it('never repeats a native send left in sending state after its lease expires',async()=>{
+  const id=randomToken(24),send=vi.fn(async()=>({messageId:'must-not-send'}));env.EMAIL={send};env.RESEND_API_KEY='new-primary-key';
+  const fetchMock=vi.fn(async()=>{throw Error('must not switch providers');});vi.stubGlobal('fetch',fetchMock);
+  await enqueueEmail(env,id,otpEmail('alice@example.com','123456','en'),now()+600);
+  db.db.prepare("UPDATE email_outbox SET provider='binding',state='sending',attempts=1,lease_until=?,next_attempt_at=0 WHERE id=?").run(now()-1,id);
+  expect(await deliverEmail(env,id)).toEqual({accepted:false,unknown:true});expect(send).not.toHaveBeenCalled();expect(fetchMock).not.toHaveBeenCalled();
+  expect(db.db.prepare('SELECT provider,state,attempts FROM email_outbox WHERE id=?').get(id)).toMatchObject({provider:'binding',state:'sending',attempts:1});
+ });
+ it('leaves the branded Resend payload and idempotency key unchanged',async()=>{
+  const id=randomToken(24),message=otpEmail('alice@example.com','123456','en'),send=vi.fn(async()=>({messageId:'unused-backup-id'}));env.EMAIL={send};env.RESEND_API_KEY='test-key';
+  const fetchMock=vi.fn(async()=>new Response(JSON.stringify({id:'resend-message-id'}),{status:200}));vi.stubGlobal('fetch',fetchMock);
+  await enqueueEmail(env,id,message,now()+600);expect(await deliverEmail(env,id)).toEqual({accepted:true,unknown:false});
+  expect(fetchMock).toHaveBeenCalledWith('https://api.resend.com/emails',expect.objectContaining({method:'POST',headers:{Authorization:'Bearer test-key','Content-Type':'application/json','Idempotency-Key':`vip-email/${id}`},body:JSON.stringify({from:message.from,to:[message.to],subject:message.subject,html:message.html,text:message.text,reply_to:message.replyTo})}));
+  expect(send).not.toHaveBeenCalled();expect(db.db.prepare('SELECT provider_id FROM email_outbox WHERE id=?').get(id)?.provider_id).toBe('resend-message-id');
  });
 });

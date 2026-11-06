@@ -34,7 +34,15 @@ export async function deliverEmail(env:Env,id:string):Promise<{accepted:boolean;
  const fallback=async()=>{
  if(!env.EMAIL){await finish(env,id,'failed','none','not_configured');return{accepted:false,unknown:false};}
  await env.DB.prepare("UPDATE email_outbox SET provider='binding' WHERE id=?").bind(id).run();
- try{await env.EMAIL.send(message);await finish(env,id,'accepted','binding','accepted');return{accepted:true,unknown:false};}catch{await finish(env,id,'unknown','binding','binding_exception');return{accepted:false,unknown:true};}
+ try{
+  // The native builder takes a plain address; never pass Resend's display-name form.
+  const result=await env.EMAIL.send({...message,from:'support@idvip.app'});
+  if(!result||typeof result!=='object'||Array.isArray(result)||!('messageId' in result)||typeof result.messageId!=='string'||!result.messageId.trim()){
+   await finish(env,id,'unknown','binding','binding_response_unknown');return{accepted:false,unknown:true};
+  }
+  // A provider ID confirms acceptance for sending, not delivery to an inbox.
+  await finish(env,id,'accepted','binding','accepted',result.messageId);return{accepted:true,unknown:false};
+ }catch{await finish(env,id,'unknown','binding','binding_exception');return{accepted:false,unknown:true};}
  };
  if(!env.RESEND_API_KEY){if(outbox.provider==='resend'){await finish(env,id,'unknown','resend','provider_missing_after_unknown');return{accepted:false,unknown:true};}return fallback();}
  await env.DB.prepare("UPDATE email_outbox SET provider='resend' WHERE id=?").bind(id).run();

@@ -141,7 +141,7 @@ it('requires explicit custody consent with OTP before issuing a managed-user ses
     .run('managed-user', 'managed@example.test', 'Managed', 'user', 2, 0, now());
   db.db.prepare('INSERT INTO custody(user_id,admin_id,created_at) VALUES(?,?,?)').run('managed-user', 'staff', now());
   const messages: { text: string }[] = [];
-  env.EMAIL = { send: async message => { messages.push(message); } };
+  env.EMAIL = { send: async message => { messages.push(message); return {messageId:'admin-native-'+messages.length}; } };
   async function post(path: string, json: unknown) {
     return apiApp.request('https://idvip.app' + path, {
       method: 'POST', headers: { Origin: 'https://idvip.app', 'Content-Type': 'application/json' },

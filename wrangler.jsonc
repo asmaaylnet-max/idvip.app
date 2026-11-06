@@ -10,7 +10,7 @@
   "d1_databases":[{"binding":"DB","database_name":"idvip-production","database_id":"3f6a016d-2b3a-4d9c-98f4-0a4fe2156d1c","migrations_dir":"migrations"}],
   "r2_buckets":[{"binding":"MEDIA","bucket_name":"idvip-media"}],
   "send_email":[{"name":"EMAIL","allowed_sender_addresses":["support@idvip.app"]}],
-  "routes":[{"pattern":"idvip.app","custom_domain":true},{"pattern":"*.idvip.app/*","zone_id":"11bf14d1e1c96b876561ba811d67a6c2"}],
+  "routes":[{"pattern":"idvip.app","custom_domain":true}],
   "browser":{"binding":"BROWSER"},
   "vars":{"PUBLIC_ORIGIN":"https://auth.idvip.app","COOKIE_MODE":"production","RP_ID":"auth.idvip.app","PHASE":"2"},
   "observability":{"enabled":true,"logs":{"enabled":true,"invocation_logs":false}}
