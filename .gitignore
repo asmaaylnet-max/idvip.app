@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.wrangler/
+.env
+.env.*
+.dev.vars
+.dev.vars.*
+*.log
+coverage/
+private/
+!/.env.example
+
+docs/original-request-ar.txt
+docs/reference-plan-0.1-ar.md
+docs/live-infrastructure-facts.md

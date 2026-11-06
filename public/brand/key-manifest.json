@@ -1,0 +1,434 @@
+{
+  "key-dark-ar-language.webp": {
+    "source": "واجهةرئيسيةداكنعربي.webp",
+    "crop": [
+      0,
+      0,
+      572,
+      224
+    ],
+    "width": 572,
+    "height": 224,
+    "bytes": 14904
+  },
+  "key-dark-ar-theme.webp": {
+    "source": "واجهةرئيسيةداكنعربي.webp",
+    "crop": [
+      572,
+      0,
+      1143,
+      224
+    ],
+    "width": 571,
+    "height": 224,
+    "bytes": 15048
+  },
+  "key-dark-ar-hero.webp": {
+    "source": "واجهةرئيسيةداكنعربي.webp",
+    "crop": [
+      0,
+      224,
+      1143,
+      834
+    ],
+    "width": 960,
+    "height": 512,
+    "bytes": 45446
+  },
+  "key-dark-ar-create.webp": {
+    "source": "واجهةرئيسيةداكنعربي.webp",
+    "crop": [
+      0,
+      834,
+      1143,
+      1075
+    ],
+    "width": 960,
+    "height": 202,
+    "bytes": 23638
+  },
+  "key-dark-ar-admin.webp": {
+    "source": "واجهةرئيسيةداكنعربي.webp",
+    "crop": [
+      0,
+      1075,
+      1143,
+      1310
+    ],
+    "width": 960,
+    "height": 197,
+    "bytes": 21812
+  },
+  "key-dark-ar-search.webp": {
+    "source": "واجهةرئيسيةداكنعربي.webp",
+    "crop": [
+      0,
+      1310,
+      1143,
+      1545
+    ],
+    "width": 960,
+    "height": 197,
+    "bytes": 19732
+  },
+  "key-dark-ar-terms.webp": {
+    "source": "واجهةرئيسيةداكنعربي.webp",
+    "crop": [
+      0,
+      1545,
+      572,
+      1782
+    ],
+    "width": 572,
+    "height": 237,
+    "bytes": 17418
+  },
+  "key-dark-ar-privacy.webp": {
+    "source": "واجهةرئيسيةداكنعربي.webp",
+    "crop": [
+      572,
+      1545,
+      1143,
+      1782
+    ],
+    "width": 571,
+    "height": 237,
+    "bytes": 17146
+  },
+  "key-dark-ar-about.webp": {
+    "source": "واجهةرئيسيةداكنعربي.webp",
+    "crop": [
+      0,
+      1782,
+      1143,
+      2048
+    ],
+    "width": 960,
+    "height": 223,
+    "bytes": 16080
+  },
+  "key-dark-en-language.webp": {
+    "source": "واجهةرئيسيةداكنانجليزيافتراضي.webp",
+    "crop": [
+      0,
+      0,
+      572,
+      223
+    ],
+    "width": 572,
+    "height": 223,
+    "bytes": 15120
+  },
+  "key-dark-en-theme.webp": {
+    "source": "واجهةرئيسيةداكنانجليزيافتراضي.webp",
+    "crop": [
+      572,
+      0,
+      1143,
+      223
+    ],
+    "width": 571,
+    "height": 223,
+    "bytes": 14880
+  },
+  "key-dark-en-hero.webp": {
+    "source": "واجهةرئيسيةداكنانجليزيافتراضي.webp",
+    "crop": [
+      0,
+      223,
+      1143,
+      833
+    ],
+    "width": 960,
+    "height": 512,
+    "bytes": 45918
+  },
+  "key-dark-en-create.webp": {
+    "source": "واجهةرئيسيةداكنانجليزيافتراضي.webp",
+    "crop": [
+      0,
+      833,
+      1143,
+      1075
+    ],
+    "width": 960,
+    "height": 203,
+    "bytes": 22286
+  },
+  "key-dark-en-admin.webp": {
+    "source": "واجهةرئيسيةداكنانجليزيافتراضي.webp",
+    "crop": [
+      0,
+      1075,
+      1143,
+      1309
+    ],
+    "width": 960,
+    "height": 197,
+    "bytes": 22940
+  },
+  "key-dark-en-search.webp": {
+    "source": "واجهةرئيسيةداكنانجليزيافتراضي.webp",
+    "crop": [
+      0,
+      1309,
+      1143,
+      1543
+    ],
+    "width": 960,
+    "height": 197,
+    "bytes": 22760
+  },
+  "key-dark-en-terms.webp": {
+    "source": "واجهةرئيسيةداكنانجليزيافتراضي.webp",
+    "crop": [
+      0,
+      1543,
+      572,
+      1769
+    ],
+    "width": 572,
+    "height": 226,
+    "bytes": 15514
+  },
+  "key-dark-en-privacy.webp": {
+    "source": "واجهةرئيسيةداكنانجليزيافتراضي.webp",
+    "crop": [
+      572,
+      1543,
+      1143,
+      1769
+    ],
+    "width": 571,
+    "height": 226,
+    "bytes": 16428
+  },
+  "key-dark-en-about.webp": {
+    "source": "واجهةرئيسيةداكنانجليزيافتراضي.webp",
+    "crop": [
+      0,
+      1769,
+      1143,
+      2048
+    ],
+    "width": 960,
+    "height": 234,
+    "bytes": 17806
+  },
+  "key-light-ar-language.webp": {
+    "source": "واجهةرئيسيةفاتحعربي.webp",
+    "crop": [
+      0,
+      0,
+      572,
+      240
+    ],
+    "width": 572,
+    "height": 240,
+    "bytes": 16370
+  },
+  "key-light-ar-theme.webp": {
+    "source": "واجهةرئيسيةفاتحعربي.webp",
+    "crop": [
+      572,
+      0,
+      1143,
+      240
+    ],
+    "width": 571,
+    "height": 240,
+    "bytes": 16662
+  },
+  "key-light-ar-hero.webp": {
+    "source": "واجهةرئيسيةفاتحعربي.webp",
+    "crop": [
+      0,
+      240,
+      1143,
+      853
+    ],
+    "width": 960,
+    "height": 515,
+    "bytes": 45600
+  },
+  "key-light-ar-create.webp": {
+    "source": "واجهةرئيسيةفاتحعربي.webp",
+    "crop": [
+      0,
+      853,
+      1143,
+      1090
+    ],
+    "width": 960,
+    "height": 199,
+    "bytes": 22960
+  },
+  "key-light-ar-admin.webp": {
+    "source": "واجهةرئيسيةفاتحعربي.webp",
+    "crop": [
+      0,
+      1090,
+      1143,
+      1327
+    ],
+    "width": 960,
+    "height": 199,
+    "bytes": 25368
+  },
+  "key-light-ar-search.webp": {
+    "source": "واجهةرئيسيةفاتحعربي.webp",
+    "crop": [
+      0,
+      1327,
+      1143,
+      1562
+    ],
+    "width": 960,
+    "height": 197,
+    "bytes": 23454
+  },
+  "key-light-ar-terms.webp": {
+    "source": "واجهةرئيسيةفاتحعربي.webp",
+    "crop": [
+      0,
+      1562,
+      572,
+      1803
+    ],
+    "width": 572,
+    "height": 241,
+    "bytes": 18866
+  },
+  "key-light-ar-privacy.webp": {
+    "source": "واجهةرئيسيةفاتحعربي.webp",
+    "crop": [
+      572,
+      1562,
+      1143,
+      1803
+    ],
+    "width": 571,
+    "height": 241,
+    "bytes": 18990
+  },
+  "key-light-ar-about.webp": {
+    "source": "واجهةرئيسيةفاتحعربي.webp",
+    "crop": [
+      0,
+      1803,
+      1143,
+      2048
+    ],
+    "width": 960,
+    "height": 206,
+    "bytes": 17756
+  },
+  "key-light-en-language.webp": {
+    "source": "واجهةرئيسيةفاتحانجليزيافتراضي.webp",
+    "crop": [
+      0,
+      0,
+      572,
+      242
+    ],
+    "width": 572,
+    "height": 242,
+    "bytes": 15160
+  },
+  "key-light-en-theme.webp": {
+    "source": "واجهةرئيسيةفاتحانجليزيافتراضي.webp",
+    "crop": [
+      572,
+      0,
+      1143,
+      242
+    ],
+    "width": 571,
+    "height": 242,
+    "bytes": 15468
+  },
+  "key-light-en-hero.webp": {
+    "source": "واجهةرئيسيةفاتحانجليزيافتراضي.webp",
+    "crop": [
+      0,
+      242,
+      1143,
+      865
+    ],
+    "width": 960,
+    "height": 523,
+    "bytes": 37898
+  },
+  "key-light-en-create.webp": {
+    "source": "واجهةرئيسيةفاتحانجليزيافتراضي.webp",
+    "crop": [
+      0,
+      865,
+      1143,
+      1103
+    ],
+    "width": 960,
+    "height": 200,
+    "bytes": 19178
+  },
+  "key-light-en-admin.webp": {
+    "source": "واجهةرئيسيةفاتحانجليزيافتراضي.webp",
+    "crop": [
+      0,
+      1103,
+      1143,
+      1341
+    ],
+    "width": 960,
+    "height": 200,
+    "bytes": 21950
+  },
+  "key-light-en-search.webp": {
+    "source": "واجهةرئيسيةفاتحانجليزيافتراضي.webp",
+    "crop": [
+      0,
+      1341,
+      1143,
+      1578
+    ],
+    "width": 960,
+    "height": 199,
+    "bytes": 22556
+  },
+  "key-light-en-terms.webp": {
+    "source": "واجهةرئيسيةفاتحانجليزيافتراضي.webp",
+    "crop": [
+      0,
+      1578,
+      572,
+      1816
+    ],
+    "width": 572,
+    "height": 238,
+    "bytes": 16632
+  },
+  "key-light-en-privacy.webp": {
+    "source": "واجهةرئيسيةفاتحانجليزيافتراضي.webp",
+    "crop": [
+      572,
+      1578,
+      1143,
+      1816
+    ],
+    "width": 571,
+    "height": 238,
+    "bytes": 17582
+  },
+  "key-light-en-about.webp": {
+    "source": "واجهةرئيسيةفاتحانجليزيافتراضي.webp",
+    "crop": [
+      0,
+      1816,
+      1143,
+      2048
+    ],
+    "width": 960,
+    "height": 195,
+    "bytes": 18514
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "$schema":"node_modules/wrangler/config-schema.json",
+  "name":"idvip-app",
+  "main":"src/server/worker-public.ts",
+  "compatibility_date":"2026-11-06",
+  "compatibility_flags":["nodejs_compat"],
+  "assets":{"directory":"./dist/client","binding":"ASSETS","run_worker_first":true},
+  "d1_databases":[{"binding":"DB","database_name":"idvip-production","database_id":"3f6a016d-2b3a-4d9c-98f4-0a4fe2156d1c","migrations_dir":"migrations"}],
+  "vars":{"PUBLIC_ORIGIN":"https://idvip.app","COOKIE_MODE":"production","PHASE":"1"},
+  "observability":{"enabled":true,"logs":{"enabled":true,"invocation_logs":false}}
+}

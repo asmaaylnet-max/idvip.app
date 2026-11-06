@@ -1,0 +1,6 @@
+const VERSION='vip-public-v1';
+self.addEventListener('install',()=>self.skipWaiting());
+self.addEventListener('activate',event=>event.waitUntil((async()=>{for(const k of await caches.keys())if(k.startsWith('vip-public-')&&k!==VERSION)await caches.delete(k);await self.clients.claim();})()));
+self.addEventListener('fetch',event=>{const u=new URL(event.request.url);if(event.request.method!=='GET'||u.origin!==self.location.origin||!/^\/(brand|fonts|assets)\//.test(u.pathname))return;event.respondWith((async()=>{const c=await caches.open(VERSION);const hit=await c.match(event.request);if(hit)return hit;const r=await fetch(event.request);if(r.ok&&r.type!=='opaque')await c.put(event.request,r.clone());return r;})());});
+self.addEventListener('push',event=>{const d=event.data?event.data.json():{};event.waitUntil(self.registration.showNotification(d.title||'VIP',{body:d.body||'',icon:'/brand/logo-dark-192.webp',badge:'/brand/logo-dark-192.webp',data:{url:d.url||'/account'}}));});
+self.addEventListener('notificationclick',event=>{event.notification.close();const p=event.notification.data?.url||'/account';event.waitUntil(self.clients.openWindow(p.startsWith('/')&&!p.startsWith('//')?p:'/account'));});

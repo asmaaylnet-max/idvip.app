@@ -1,0 +1,18 @@
+import { useState, type ReactNode, type ButtonHTMLAttributes, type InputHTMLAttributes } from 'react';
+import { ArrowRight, ArrowLeft, Mic, Volume2, Check, X } from 'lucide-react';
+import { useUI } from './Context';
+export function MetalButton({children,className='',...props}:ButtonHTMLAttributes<HTMLButtonElement>){return <button {...props} className={`metal-button ${className}`}>{children}</button>}
+export function Panel({children,className=''}:{children:ReactNode;className?:string}){return <section className={`metal-panel ${className}`}>{children}</section>}
+export function PageHeading({title,subtitle,back=true}:{title:string;subtitle?:string;back?:boolean}){const u=useUI();return <header className="page-heading">{back&&<button className="icon-button" onClick={()=>u.navigate('/')} aria-label={u.text('الرئيسية','Home')}>{u.lang==='ar'?<ArrowRight/>:<ArrowLeft/>}</button>}<div><h1>{title}</h1>{subtitle&&<p>{subtitle}</p>}</div></header>}
+export function Field({label,value,onChange,textarea=false,...props}:{label:string;value:string;onChange:(v:string)=>void;textarea?:boolean}&Omit<InputHTMLAttributes<HTMLInputElement>,'value'|'onChange'>){
+ const u=useUI(); const [candidate,setCandidate]=useState<string|null>(null);const [listening,setListening]=useState(false);
+ function record(){ const R=(window as any).SpeechRecognition||(window as any).webkitSpeechRecognition;
+  if(!R){u.toast(u.text('يمكنك استخدام الإملاء الصوتي من لوحة مفاتيح جهازك.','Use voice dictation from your device keyboard.'));return;}
+  const r=new R();r.lang=u.lang==='ar'?'ar-SA':'en-US';r.interimResults=false;r.onresult=(e:any)=>{setCandidate(e.results[0][0].transcript);setListening(false);};r.onerror=()=>{setListening(false);u.toast(u.text('تعذر الاستماع. تحقق من إذن الميكروفون.','Unable to listen. Check microphone permission.'));};r.onend=()=>setListening(false);setListening(true);r.start();
+ }
+ const id=props.id||`field-${label.replace(/\s/g,'-')}`;
+ return <div className="field"><label htmlFor={id}>{label}{props.required&&<span aria-hidden="true"> *</span>}</label><div className="field-input">{textarea?<textarea id={id} value={value} onChange={e=>onChange(e.target.value)} rows={4} placeholder={props.placeholder} required={props.required}/>:<input {...props} id={id} value={value} onChange={e=>onChange(e.target.value)}/>}<div className="field-tools"><button type="button" className={`icon-button ${listening?'listening':''}`} onClick={record} aria-label={u.text('تعبئة صوتية: ','Voice input: ')+label}><Mic size={18}/></button><button type="button" className="icon-button" onClick={()=>u.speak(value||label)} aria-label={u.text('استمع: ','Listen: ')+label}><Volume2 size={18}/></button></div></div>{candidate!==null&&<div className="voice-confirm" role="status"><p>{candidate}</p><button type="button" onClick={()=>u.speak(candidate)} aria-label={u.text('استمع للنص','Listen to text')}><Volume2 size={18}/></button><button type="button" onClick={()=>{onChange(candidate);setCandidate(null)}}><Check size={18}/>{u.text('تأكيد','Confirm')}</button><button type="button" onClick={()=>setCandidate(null)}><X size={18}/>{u.text('إلغاء','Cancel')}</button></div>}</div>
+}
+export function Empty({text}:{text:string}){return <div className="empty-state"><span className="empty-monogram">VIP</span><p>{text}</p></div>}
+export function Busy(){const u=useUI();return <div className="busy" role="status"><span className="spinner"/>{u.text('لحظات…','One moment…')}</div>}
+export function ErrorBox({error}:{error:string}){return error?<p className="error-box" role="alert">{error}</p>:null}
