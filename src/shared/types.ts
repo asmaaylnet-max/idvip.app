@@ -18,10 +18,10 @@ export interface ProfileData {
 export interface Site {
   id: string; slug: string; language: Lang; status: 'draft'|'review'|'published'|'suspended'|'hidden';
   draft: ProfileData; published: ProfileData | null; revision: number; publishedRevision: number | null;
-  discoverable: boolean; visible: boolean; ownerId: string; pendingReview?: string | null;
+  discoverable: boolean; visible: boolean; ownerId: string; pendingReview?: string | null; privacyHidden?: string[];
 }
 export interface PublicProfile { slug: string; language: Lang; data: ProfileData; publicId?: number; isDemo?: boolean; }
-export interface Notification { id: string; title: string; body: string; createdAt: string; read: boolean; heard: boolean; }
+export interface Notification { id: string; title: string; body: string; createdAt: string; read: boolean; heard: boolean; type?: 'normal'|'special'; }
 export interface Review { id: string; siteId: string; slug: string; userName: string; userEmail: string; whatsapp: string; revision: number; kind:'publish'|'edit'; status:string; data:ProfileData; createdAt:string; }
 export interface AuditEvent { id: string; actor: string; action: string; object: string; outcome: string; createdAt: string; hash: string; }
 export interface BlogPost { id: string; slug: string; titleAr: string; titleEn: string; bodyAr: string; bodyEn: string; published: boolean; }

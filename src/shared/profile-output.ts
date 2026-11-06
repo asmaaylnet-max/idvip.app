@@ -216,12 +216,12 @@ ${section(t.training, timeline(data.training))}
 ${section(t.languages, languageBody ? `<ul class="language-list">${languageBody}</ul>` : '')}
 ${section(t.skills, tags(data.skills))}
 ${section(t.awards, timeline(data.awards))}
-${section(t.hobbies, tags(data.hobbies))}
-${section(t.workSamples, workBody ? `<div class="media-grid">${workBody}</div>` : '')}
-${section(t.proofs, proofBody ? `<div class="media-grid">${proofBody}</div>` : '')}
-${section(t.videos, youtube + (videoBody ? `<ul>${videoBody}</ul>` : ''))}
-${section(t.links, outboundBody ? `<ul>${outboundBody}</ul>` : '')}
-${section(t.socials, socialBody ? `<ul>${socialBody}</ul>` : '')}
-${section(t.note, paragraph(data.note))}
+${!ats?section(t.hobbies, tags(data.hobbies)):''}
+${!ats?section(t.workSamples, workBody ? `<div class="media-grid">${workBody}</div>` : ''):''}
+${!ats?section(t.proofs, proofBody ? `<div class="media-grid">${proofBody}</div>` : ''):''}
+${!ats?section(t.videos, youtube + (videoBody ? `<ul>${videoBody}</ul>` : '')):''}
+${!ats?section(t.links, outboundBody ? `<ul>${outboundBody}</ul>` : ''):''}
+${ats?section('LinkedIn',link(data.socials.linkedin||'','LinkedIn')):section(t.socials, socialBody ? `<ul>${socialBody}</ul>` : '')}
+${!ats?section(t.note, paragraph(data.note)):''}
 </main></body></html>`;
 }

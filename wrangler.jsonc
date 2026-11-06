@@ -3,11 +3,12 @@
   "name":"idvip-app",
   "account_id":"9832075498101f6bbff93a4499a9a56b",
   "workers_dev":false,
-  "main":"src/server/worker-public.ts",
+  "main":"src/server/worker.ts",
   "compatibility_date":"2026-11-06",
   "compatibility_flags":["nodejs_compat"],
   "assets":{"directory":"./dist/client","binding":"ASSETS","run_worker_first":true},
   "d1_databases":[{"binding":"DB","database_name":"idvip-production","database_id":"3f6a016d-2b3a-4d9c-98f4-0a4fe2156d1c","migrations_dir":"migrations"}],
-  "vars":{"PUBLIC_ORIGIN":"https://idvip.app","COOKIE_MODE":"production","PHASE":"1"},
+  "browser":{"binding":"BROWSER"},
+  "vars":{"PUBLIC_ORIGIN":"https://auth.idvip.app","COOKIE_MODE":"production","RP_ID":"auth.idvip.app","PHASE":"2"},
   "observability":{"enabled":true,"logs":{"enabled":true,"invocation_logs":false}}
 }
