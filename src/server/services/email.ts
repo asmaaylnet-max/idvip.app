@@ -48,9 +48,20 @@ export async function deliverEmail(env:Env,id:string):Promise<{accepted:boolean;
  await env.DB.prepare("UPDATE email_outbox SET provider='resend' WHERE id=?").bind(id).run();
  let response:Response;
  try{response=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`,'Content-Type':'application/json','Idempotency-Key':`vip-email/${id}`},body:JSON.stringify({from:message.from,to:[message.to],subject:message.subject,html:message.html,text:message.text,reply_to:message.replyTo}),signal:AbortSignal.timeout(15000)});}catch{await finish(env,id,'unknown','resend','network_unknown');return{accepted:false,unknown:true};}
- let result:{id?:string;name?:string};try{result=await response.json() as typeof result;}catch{await finish(env,id,'unknown','resend','response_unknown');return{accepted:false,unknown:true};}
- if(response.ok&&result.id){await finish(env,id,'accepted','resend','accepted',result.id);return{accepted:true,unknown:false};}
- const code=result.name??`http_${response.status}`;
+ let result:unknown;try{result=await response.json();}catch{await finish(env,id,'unknown','resend','response_unknown');return{accepted:false,unknown:true};}
+ if(!result||typeof result!=='object'||Array.isArray(result)){
+  await finish(env,id,'unknown','resend','response_unknown');return{accepted:false,unknown:true};
+ }
+ if(response.ok&&'id' in result&&typeof result.id==='string'&&result.id.trim()){
+  await finish(env,id,'accepted','resend','accepted',result.id);return{accepted:true,unknown:false};
+ }
+ // A contradictory provider ID or malformed error name is not an explicit rejection.
+ if(!response.ok&&'id' in result||'name' in result&&typeof result.name!=='string'){
+  await finish(env,id,'unknown','resend','response_unknown');return{accepted:false,unknown:true};
+ }
+ // Official quota exhaustion is HTTP 429 + daily_quota_exceeded/monthly_quota_exceeded.
+ // https://resend.com/docs/api-reference/errors — never infer it from message or SDK wrappers.
+ const code='name' in result?result.name as string:`http_${response.status}`;
  if(canFallback(response.status,code)&&env.EMAIL&&!hadUncertainty)return fallback();
  const unknown=hadUncertainty||response.status>=500||response.status===409||response.ok;
  await finish(env,id,unknown?'unknown':'failed','resend',code);return{accepted:false,unknown};

@@ -152,3 +152,77 @@ describe('native email API contract',()=>{
   expect(send).not.toHaveBeenCalled();expect(db.db.prepare('SELECT provider_id FROM email_outbox WHERE id=?').get(id)?.provider_id).toBe('resend-message-id');
  });
 });
+
+// Official Resend errors and usage limits both specify HTTP 429 for daily/monthly exhaustion:
+// https://resend.com/docs/api-reference/errors
+// https://resend.com/docs/api-reference/rate-limit
+// The raw REST error uses `name`; the HTTP status, not a body/SDK statusCode, is authoritative.
+describe('Resend primary and explicit rejected-quota backup',()=>{
+ const signup={email:'alice@example.com',purpose:'signup',name:'Alice',slug:'alice',language:'en',termsAccepted:true,ageConfirmed:true,locale:'en'};
+ async function queued(){const id=randomToken(24),message=otpEmail('alice@example.com','123456','en','Alice');await enqueueEmail(env,id,message,now()+600);return{id,message};}
+ it.each(['daily_quota_exceeded','monthly_quota_exceeded','rate_limit_exceeded'])('switches only after explicit HTTP 429 %s, preserving the full message and accepting once',async name=>{
+  env.RESEND_API_KEY='test-key';const send=vi.fn(async()=>({messageId:'native-quota-id'}));env.EMAIL={send};
+  const fetchMock=vi.fn(async()=>new Response(JSON.stringify({statusCode:429,name,message:'Email request rejected by provider limit.'}),{status:429}));vi.stubGlobal('fetch',fetchMock);
+  const response=await request('/auth/request','POST',signup);expect(response.status).toBe(200);const challenge=await response.json() as {challengeId:string};
+  expect(fetchMock).toHaveBeenCalledOnce();expect(send).toHaveBeenCalledOnce();expect(fetchMock.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]);
+  const call=fetchMock.mock.calls[0] as unknown as [string,RequestInit],headers=call[1].headers as Record<string,string>;
+  const primary=JSON.parse(call[1].body as string) as {from:string;to:string[];subject:string;html:string;text:string;reply_to:string};
+  expect(primary.from).toBe('VIP Support <support@idvip.app>');expect(primary.reply_to).toBe('ceo@idvip.app');expect(headers['Idempotency-Key']).toBe(`vip-email/${challenge.challengeId}`);
+  expect(send).toHaveBeenCalledWith({from:'support@idvip.app',to:primary.to[0],subject:primary.subject,html:primary.html,text:primary.text,replyTo:primary.reply_to});
+  expect(db.db.prepare('SELECT provider,state,provider_id,payload_cipher,attempts,uncertain FROM email_outbox WHERE id=?').get(challenge.challengeId)).toMatchObject({provider:'binding',state:'accepted',provider_id:'native-quota-id',payload_cipher:'',attempts:1,uncertain:0});
+  expect(db.db.prepare('SELECT delivery_state FROM otp_challenges WHERE id=?').get(challenge.challengeId)?.delivery_state).toBe('accepted');
+  expect(await deliverEmail(env,challenge.challengeId)).toEqual({accepted:true,unknown:false});expect(fetchMock).toHaveBeenCalledOnce();expect(send).toHaveBeenCalledOnce();
+ });
+ it.each(['daily_quota_exceeded','monthly_quota_exceeded'])('returns truthful unavailable on %s without native EMAIL',async name=>{
+  env.RESEND_API_KEY='test-key';const fetchMock=vi.fn(async()=>new Response(JSON.stringify({statusCode:429,name,message:'Rejected: email quota exhausted.'}),{status:429}));vi.stubGlobal('fetch',fetchMock);
+  const response=await request('/auth/request','POST',signup);expect(response.status).toBe(503);const result=await response.json() as {code:string;challengeId:string;message?:string};
+  expect(result.code).toBe('EMAIL_UNAVAILABLE');expect(result.message).toBeUndefined();expect(fetchMock).toHaveBeenCalledOnce();
+  const row=db.db.prepare('SELECT provider,state,provider_id,payload_cipher,uncertain,last_code FROM email_outbox WHERE id=?').get(result.challengeId)!;
+  expect(row).toMatchObject({provider:'resend',state:'failed',provider_id:null,uncertain:0,last_code:name});expect(row.payload_cipher).not.toBe('');
+  expect(db.db.prepare('SELECT delivery_state FROM otp_challenges WHERE id=?').get(result.challengeId)?.delivery_state).toBe('failed');expect(db.db.prepare('SELECT count(*) n FROM users').get()?.n).toBe(0);
+ });
+ it.each([200,201,202])('never invokes native after Resend acceptance HTTP %s or an accepted outbox retry',async status=>{
+  env.RESEND_API_KEY='test-key';const send=vi.fn(async()=>({messageId:'must-not-send'}));env.EMAIL={send};
+  const fetchMock=vi.fn(async()=>new Response(JSON.stringify({id:'primary-accepted-id'}),{status}));vi.stubGlobal('fetch',fetchMock);const{id,message}=await queued();
+  expect(await deliverEmail(env,id)).toEqual({accepted:true,unknown:false});expect(fetchMock).toHaveBeenCalledWith('https://api.resend.com/emails',expect.objectContaining({body:JSON.stringify({from:message.from,to:[message.to],subject:message.subject,html:message.html,text:message.text,reply_to:message.replyTo})}));
+  env.RESEND_API_KEY=undefined;expect(await deliverEmail(env,id)).toEqual({accepted:true,unknown:false});expect(send).not.toHaveBeenCalled();expect(fetchMock).toHaveBeenCalledOnce();
+  expect(db.db.prepare('SELECT state,provider,provider_id,attempts FROM email_outbox WHERE id=?').get(id)).toMatchObject({state:'accepted',provider:'resend',provider_id:'primary-accepted-id',attempts:1});
+ });
+ it.each(['daily_quota_exceeded','monthly_quota_exceeded'])('never invokes native after a network-unknown attempt followed by repeated %s',async name=>{
+  env.RESEND_API_KEY='test-key';const send=vi.fn(async()=>({messageId:'must-not-send'}));env.EMAIL={send};
+  const fetchMock=vi.fn().mockRejectedValueOnce(new TypeError('connection lost')).mockImplementation(async()=>new Response(JSON.stringify({statusCode:429,name,message:'Quota exhausted.'}),{status:429}));vi.stubGlobal('fetch',fetchMock);const{id}=await queued();
+  expect(await deliverEmail(env,id)).toEqual({accepted:false,unknown:true});const encrypted=db.db.prepare('SELECT payload_cipher FROM email_outbox WHERE id=?').get(id)?.payload_cipher;
+  for(let retry=0;retry<2;retry++){db.db.prepare('UPDATE email_outbox SET next_attempt_at=0,lease_until=NULL WHERE id=?').run(id);expect(await deliverEmail(env,id)).toEqual({accepted:false,unknown:true});}
+  expect(send).not.toHaveBeenCalled();expect(fetchMock).toHaveBeenCalledTimes(3);for(const call of fetchMock.mock.calls.slice(1)){expect(call[1].body).toBe(fetchMock.mock.calls[0][1].body);expect(call[1].headers['Idempotency-Key']).toBe(fetchMock.mock.calls[0][1].headers['Idempotency-Key']);}
+  expect(db.db.prepare('SELECT provider,state,provider_id,uncertain,payload_cipher FROM email_outbox WHERE id=?').get(id)).toMatchObject({provider:'resend',state:'unknown',provider_id:null,uncertain:1,payload_cipher:encrypted});
+ });
+ it.each(['uncertain flag','unknown state','expired sending lease'])('preserves %s against monthly quota fallback',async history=>{
+  env.RESEND_API_KEY='test-key';const send=vi.fn(async()=>({messageId:'must-not-send'}));env.EMAIL={send};vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({name:'monthly_quota_exceeded'}),{status:429})));const{id}=await queued();
+  db.db.prepare('UPDATE email_outbox SET provider=?,state=?,uncertain=?,lease_until=?,next_attempt_at=0 WHERE id=?').run('resend',history==='unknown state'?'unknown':history==='expired sending lease'?'sending':'failed',history==='uncertain flag'?1:0,history==='expired sending lease'?now()-1:null,id);
+  expect(await deliverEmail(env,id)).toEqual({accepted:false,unknown:true});expect(send).not.toHaveBeenCalled();expect(db.db.prepare('SELECT provider,state,uncertain FROM email_outbox WHERE id=?').get(id)).toMatchObject({provider:'resend',state:'unknown',uncertain:1});
+ });
+ it.each([
+  [500,'application_error'],[503,'service_unavailable'],[500,'daily_quota_exceeded'],[503,'monthly_quota_exceeded'],
+  [409,'concurrent_idempotent_requests'],[409,'invalid_idempotent_request'],[409,'monthly_quota_exceeded'],
+ ] as [number,string][])('does not fallback on uncertain HTTP %s %s',async(status,name)=>{
+  env.RESEND_API_KEY='test-key';const send=vi.fn(async()=>({messageId:'must-not-send'}));env.EMAIL={send};vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({statusCode:429,name}),{status})));const{id}=await queued();
+  expect(await deliverEmail(env,id)).toEqual({accepted:false,unknown:true});expect(send).not.toHaveBeenCalled();expect(db.db.prepare('SELECT provider,state,uncertain FROM email_outbox WHERE id=?').get(id)).toMatchObject({provider:'resend',state:'unknown',uncertain:1});
+ });
+ it.each([
+  ['generic HTTP 429',429,{}],['unrecognized rate error',429,{name:'too_many_requests'}],['quota in code only',429,{code:'daily_quota_exceeded'}],
+  ['nested SDK error',429,{error:{name:'monthly_quota_exceeded',statusCode:429}}],['quota message only',429,{message:'monthly_quota_exceeded'}],
+  ['body status cannot override HTTP 403',403,{statusCode:429,name:'daily_quota_exceeded'}],['body status cannot override HTTP 422',422,{statusCode:429,name:'monthly_quota_exceeded'}],
+ ] as [string,number,unknown][])('does not guess fallback from %s',async(_label,status,result)=>{
+  env.RESEND_API_KEY='test-key';const send=vi.fn(async()=>({messageId:'must-not-send'}));env.EMAIL={send};vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify(result),{status})));const{id}=await queued();
+  expect(await deliverEmail(env,id)).toEqual({accepted:false,unknown:false});expect(send).not.toHaveBeenCalled();expect(db.db.prepare('SELECT provider,state,provider_id FROM email_outbox WHERE id=?').get(id)).toMatchObject({provider:'resend',state:'failed',provider_id:null});
+ });
+ it.each([
+  ['non-JSON HTTP 429',429,'upstream unavailable'],['null HTTP 429',429,'null'],['array HTTP 429',429,'[]'],['string HTTP 429',429,'"daily_quota_exceeded"'],
+  ['object name HTTP 429',429,JSON.stringify({name:{value:'monthly_quota_exceeded'}})],['numeric name HTTP 429',429,JSON.stringify({name:429})],
+  ['missing success ID',200,'{}'],['numeric success ID',200,'{"id":123}'],['blank success ID',200,'{"id":"   "}'],
+  ['quota-shaped HTTP success',200,JSON.stringify({name:'daily_quota_exceeded'})],['conflicting quota with provider ID',429,JSON.stringify({id:'possibly-accepted-id',name:'monthly_quota_exceeded'})],
+ ] as [string,number,string][])('keeps %s unknown without switching providers',async(_label,status,body)=>{
+  env.RESEND_API_KEY='test-key';const send=vi.fn(async()=>({messageId:'must-not-send'}));env.EMAIL={send};vi.stubGlobal('fetch',vi.fn(async()=>new Response(body,{status})));const{id}=await queued();
+  expect(await deliverEmail(env,id)).toEqual({accepted:false,unknown:true});expect(send).not.toHaveBeenCalled();expect(db.db.prepare('SELECT provider,state,provider_id,uncertain,payload_cipher FROM email_outbox WHERE id=?').get(id)).toMatchObject({provider:'resend',state:'unknown',provider_id:null,uncertain:1,payload_cipher:expect.any(String)});
+ });
+});

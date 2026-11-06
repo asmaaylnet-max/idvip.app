@@ -15,6 +15,14 @@ import { api } from "./api";
 import { Busy, MetalButton } from "./components/UI";
 import Home from "./pages/Home";
 import { canNavigate } from "./navigation";
+import {
+  isPlatformHome,
+  markInstallSeen,
+  readConsent,
+  saveConsent,
+  shouldNudgeInstall,
+  type ConsentChoice,
+} from "./preferences";
 import { SearchPage, FeaturesPage, BlogPage, InfoPage } from "./pages/Public";
 const PushPermission = lazy(() => import("./components/PushPermission"));
 const screens = import.meta.glob<{
@@ -99,9 +107,13 @@ export default function App() {
   const [install, setInstall] = useState<any>(null);
   const [showInstall, setShowInstall] = useState(false);
   const [installHelp, setInstallHelp] = useState(false);
-  const [cookie, setCookie] = useState(false);
+  const [cookie, setCookie] = useState(
+    () => isPlatformHome(initialPath()) && !readConsent(),
+  );
   const [custom, setCustom] = useState(false);
-  const [external, setExternal] = useState(false);
+  const [external, setExternal] = useState(
+    () => readConsent()?.external ?? false,
+  );
   const [voice, setVoice] = useState(false);
   const [voiceListening, setVoiceListening] = useState(false);
   const text = useCallback(
@@ -258,57 +270,66 @@ export default function App() {
       .catch(() => {});
     if ("serviceWorker" in navigator)
       navigator.serviceWorker.register("/sw.js").catch(() => {});
-    try {
-      setCookie(!localStorage.getItem("vip-consent"));
-    } catch {
-      setCookie(true);
-    }
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      if (
-        !window.matchMedia("(display-mode:standalone)").matches &&
-        !sessionStorage.getItem("vip-install-dismissed")
-      ) {
-        setShowInstall(true);
-        timer = setTimeout(() => setShowInstall(false), 3000);
-      }
-    } catch {}
     const f = (e: any) => {
       e.preventDefault();
       setInstall(e);
     };
+    const installed = () => {
+      markInstallSeen();
+      setShowInstall(false);
+      setInstall(null);
+    };
     addEventListener("beforeinstallprompt", f);
+    addEventListener("appinstalled", installed);
     return () => {
       removeEventListener("beforeinstallprompt", f);
-      if (timer) clearTimeout(timer);
+      removeEventListener("appinstalled", installed);
     };
   }, []);
-  const requestInstall = useCallback(async () => {
-    if (install) {
-      await install.prompt();
-      const r = await install.userChoice;
-      if (r.outcome === "accepted")
-        toast(text("تم قبول التثبيت.", "Installation accepted."));
-      setInstall(null);
+  useEffect(() => {
+    const standalone =
+      window.matchMedia("(display-mode:standalone)").matches ||
+      (navigator as Navigator & { standalone?: boolean }).standalone === true;
+    if (
+      !shouldNudgeInstall(isPlatformHome(path), cookie, standalone) ||
+      installHelp
+    ) {
       setShowInstall(false);
+      return;
+    }
+    markInstallSeen();
+    setShowInstall(true);
+    const timer = setTimeout(() => setShowInstall(false), 3000);
+    return () => clearTimeout(timer);
+  }, [path, cookie, installHelp]);
+  const requestInstall = useCallback(async () => {
+    markInstallSeen();
+    setShowInstall(false);
+    if (install) {
+      try {
+        await install.prompt();
+        const r = await install.userChoice;
+        if (r.outcome === "accepted")
+          toast(text("تم قبول التثبيت.", "Installation accepted."));
+      } catch {
+        setInstallHelp(true);
+        toast(
+          text(
+            "استخدم خيار التثبيت في قائمة المتصفح.",
+            "Use the install option in your browser menu.",
+          ),
+        );
+      } finally {
+        setInstall(null);
+      }
     } else setInstallHelp(true);
   }, [install, text, toast]);
   useEffect(() => {
     addEventListener("vip-install", requestInstall);
     return () => removeEventListener("vip-install", requestInstall);
   }, [requestInstall]);
-  function consent(choice: string) {
-    try {
-      localStorage.setItem(
-        "vip-consent",
-        JSON.stringify({
-          choice,
-          external: choice === "all" || (choice === "partial" && external),
-          version: 1,
-          date: new Date().toISOString(),
-        }),
-      );
-    } catch {}
+  function consent(choice: ConsentChoice) {
+    saveConsent(choice, external);
     setCookie(false);
     setCustom(false);
     window.dispatchEvent(new Event("vip-consent-changed"));
@@ -479,7 +500,7 @@ export default function App() {
           <button
             className="text-button"
             onClick={() => {
-              speechSynthesis?.cancel();
+              if ("speechSynthesis" in window) window.speechSynthesis.cancel();
               setVoice(false);
             }}
           >
@@ -498,7 +519,7 @@ export default function App() {
             aria-label={text("إغلاق", "Close")}
             onClick={() => {
               setShowInstall(false);
-              sessionStorage.setItem("vip-install-dismissed", "1");
+              markInstallSeen();
             }}
           >
             <X size={17} />
@@ -586,8 +607,17 @@ export default function App() {
           <button onClick={() => navigate("/privacy")}>
             {text("الخصوصية", "Privacy")}
           </button>
-          <button onClick={() => setCookie(true)}>
+          <button
+            onClick={() => {
+              setExternal(readConsent()?.external ?? false);
+              setCustom(false);
+              setCookie(true);
+            }}
+          >
             {text("اختيارات الخصوصية", "Privacy choices")}
+          </button>
+          <button onClick={requestInstall}>
+            {text("تثبيت VIP", "Install VIP")}
           </button>
           <a href="mailto:ceo@idvip.app">{text("الدعم", "Support")}</a>
         </footer>
