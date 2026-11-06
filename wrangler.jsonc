@@ -1,6 +1,8 @@
 {
   "$schema":"node_modules/wrangler/config-schema.json",
   "name":"idvip-app",
+  "account_id":"9832075498101f6bbff93a4499a9a56b",
+  "workers_dev":false,
   "main":"src/server/worker-public.ts",
   "compatibility_date":"2026-11-06",
   "compatibility_flags":["nodejs_compat"],
