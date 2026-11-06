@@ -12,6 +12,6 @@
   "send_email":[{"name":"EMAIL","allowed_sender_addresses":["support@idvip.app"]}],
   "routes":[{"pattern":"idvip.app","custom_domain":true}],
   "browser":{"binding":"BROWSER"},
-  "vars":{"PUBLIC_ORIGIN":"https://auth.idvip.app","COOKIE_MODE":"production","RP_ID":"auth.idvip.app","PHASE":"2"},
+  "vars":{"PUBLIC_ORIGIN":"https://auth.idvip.app","COOKIE_MODE":"production","RP_ID":"auth.idvip.app","PHASE":"4","PUSH_ENABLED":"true","PUSH_ALLOWED_PROVIDERS":"fcm,mozilla,apple"},
   "observability":{"enabled":true,"logs":{"enabled":true,"invocation_logs":false}}
 }

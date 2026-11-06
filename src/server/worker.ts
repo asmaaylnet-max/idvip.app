@@ -57,7 +57,19 @@ async function handle(request:Request,env:Env,ctx:ExecutionContext):Promise<Resp
   const pages=['','search','features','about','privacy','terms','blog','test'].map(s=>`https://${s?s+'.':''}idvip.app/`);return new Response('<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'+[...pages,...rows.results.map(r=>`https://${r.slug}.idvip.app/`)].map(p=>`<url><loc>${escapeHTML(p)}</loc></url>`).join('')+'</urlset>',{headers:{'Content-Type':'application/xml','Cache-Control':'no-cache'}});
  }
  const isAsset=/^\/(assets|brand|fonts)\//.test(url.pathname)||['/manifest.webmanifest','/sw.js','/manus-routes.json','/favicon.ico'].includes(url.pathname);
- if(isAsset){const source=await env.ASSETS.fetch(request);const response=new Response(source.body,source);response.headers.set('X-Content-Type-Options','nosniff');response.headers.set('Cache-Control',url.pathname.startsWith('/assets/')?'public,max-age=31536000,immutable':'public,max-age=300');return response;}
+ if(isAsset){
+  const source=await env.ASSETS.fetch(request);
+  const response=new Response(source.body,source);
+  response.headers.set('X-Content-Type-Options','nosniff');
+  response.headers.set('Cache-Control',url.pathname.startsWith('/assets/')?'public,max-age=31536000,immutable':'public,max-age=300');
+  // Browser Run renders supplied HTML from an opaque origin. Public fonts may
+  // be fetched cross-origin; private API and media responses are unchanged.
+  if(url.pathname.startsWith('/fonts/')&&response.ok){
+   response.headers.set('Access-Control-Allow-Origin','*');
+   response.headers.set('Cross-Origin-Resource-Policy','cross-origin');
+  }
+  return response;
+ }
  if(request.method!=='GET'&&request.method!=='HEAD')return new Response(null,{status:405});
  const settings=await env.DB.prepare('SELECT home_locked,platform_locked FROM settings WHERE id=1').first<{home_locked:number;platform_locked:number}>();
  const rightsPage=['/privacy','/terms'].includes(path);if((settings?.platform_locked&&!rightsPage&&first!=='auth')||(settings?.home_locked&&host==='idvip.app'&&url.pathname==='/'))return new Response(`<html lang="${lang}" dir="${lang==='ar'?'rtl':'ltr'}"><body style="background:#101013;color:#e8cf8b;font-family:Arial;padding:3rem"><h1>VIP</h1><p>${lang==='ar'?'نجري تحسينات للخدمة. يمكنك الوصول إلى حسابك وحقوقك.':'Service improvements are in progress. Your account and rights remain accessible.'}</p><a style="color:inherit" href="https://auth.idvip.app/account">${lang==='ar'?'الحساب':'Account'}</a> · <a style="color:inherit" href="https://privacy.idvip.app/">${lang==='ar'?'الخصوصية':'Privacy'}</a></body></html>`,{status:503,headers:{...responseHeaders(true),'Retry-After':'120'}});
